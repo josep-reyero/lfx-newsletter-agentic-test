@@ -159,18 +159,19 @@ post_inline_review() {
     fi
   done <"$new_inline"
 }
-post_inline_review
 
 # --- 4. Compute clean from the agent output -----------------------------------
 total_blocking=$((live_existing_blocking + new_blocking))
 clean=true; [ "$total_blocking" -gt 0 ] && clean=false
 
-# --- 5. Post this turn's review summary ---------------------------------------
+# --- 5. Post this turn's review summary, then the inline findings -------------
 # A fresh comment per review turn (never edit the previous one), so the PR keeps
-# a visible history of how the review evolved across pushes.
+# a visible history of how the review evolved across pushes. The summary is
+# posted BEFORE the inline comments so it sits above them in the conversation.
+# Title is per-repo (REVIEW_TITLE), set by the workflow.
 summary_file="$TMP/summary.md"
 {
-  printf '## Agentic review\n\n'
+  printf '## %s\n\n' "${REVIEW_TITLE:-Agentic review}"
   [ -n "$summary" ] && printf '%s\n\n' "$summary"
   if [ "$clean" = true ]; then
     printf '### No blocking issues\n'
@@ -202,6 +203,7 @@ post_summary() {
   gh api "repos/${REPO}/issues/${PR_NUMBER}/comments" -F body=@"$summary_file" >/dev/null
 }
 post_summary
+post_inline_review
 
 # --- 6. Emit the clean verdict ------------------------------------------------
 ag_log "clean=${clean} (new_blocking=${new_blocking}, existing_live_blocking=${live_existing_blocking})"

@@ -41,6 +41,8 @@ env:
   PR_BODY: ${{ github.event.pull_request.body }}
   OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
   CODEX_EFFORT: xhigh
+  # Title shown on the review summary comment. Per repo.
+  REVIEW_TITLE: Newsletter PR Reviewer
 
 jobs:
   pr-reviewer:

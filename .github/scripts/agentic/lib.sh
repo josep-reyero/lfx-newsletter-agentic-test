@@ -164,6 +164,37 @@ ag_summary_get() {
     | .body] | last // ""'
 }
 
+# Marker on the single escalation verdict comment. Unlike the review summary
+# (one per turn), the escalation judge keeps ONE comment and upserts it each run,
+# so the PR always shows the current verdict (escalate or not) without a fresh
+# comment per push.
+# shellcheck disable=SC2034
+ag_escalation_marker='<!-- agentic:escalation -->'
+
+# Print the databaseId of the LATEST escalation verdict comment we authored
+# (carrying ag_escalation_marker), or nothing if none. Lets apply-verdict.sh edit
+# the existing comment instead of posting a new one. Ownership is via
+# viewerDidAuthor (GitHub-attested), so a PR author embedding the marker cannot
+# redirect the edit onto their own comment. Read-only; empty on no token/error.
+ag_escalation_comment_id() {
+  local repo="$1" pr="$2" owner name raw
+  owner="${repo%%/*}"; name="${repo#*/}"
+  [ -z "${GH_TOKEN:-${GITHUB_TOKEN:-}}" ] && return 0
+  raw="$(gh api graphql \
+      -f query='query($owner:String!,$name:String!,$pr:Int!){
+        repository(owner:$owner,name:$name){
+          pullRequest(number:$pr){
+            comments(first:100){ nodes{ databaseId body viewerDidAuthor } }
+          }
+        }
+      }' \
+      -F owner="$owner" -F name="$name" -F pr="$pr" 2>/dev/null)" || return 0
+  printf '%s' "$raw" | jq -r '[.data.repository.pullRequest.comments.nodes[]
+    | select(.viewerDidAuthor == true)
+    | select(.body | contains("agentic:escalation"))
+    | .databaseId] | last // empty'
+}
+
 # The bot deliberately never resolves or reopens review threads: GitHub thread
 # state is the developer's to manage. The agent's fixed/not-fixed verdict feeds
 # the clean status instead (see post-comments.sh), so a thread resolved without a
