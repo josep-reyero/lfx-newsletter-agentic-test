@@ -1,27 +1,31 @@
 # Escalation guidelines (lfx-v2-newsletter-service)
 
-These guidelines describe the kinds of changes that need a human's sign-off
-before a `lfx-v2-newsletter-service` pull request can merge.
+These guidelines describe the changes that escalate to needs-human before a
+`lfx-v2-newsletter-service` pull request can merge. Everything not described
+here is routine: the pr-reviewer already blocks the change on any defect it
+finds, so your default is to let it through. Escalate to needs-human only when a
+change moves one of the boundaries below, where a human sees something a
+single-repo code review structurally cannot: the other end of a contract, the
+authorization model, a secret, or the real-world effect of sending.
 
 **How to read this file.** Each guideline describes a boundary, not a list of
 files. The paths and examples are illustrative anchors, never an exhaustive
 inventory: a change matches a guideline if it alters the boundary the guideline
-describes, wherever in the tree the change lives, and absence from an example
-is never a reason not to escalate. Nor is the list itself exhaustive: it is a
-floor, not a ceiling, and a change that endangers what these guidelines
-protect without matching any single item still needs a human. If the code
-seems to have drifted from how this file describes it, that drift is itself a
-reason to escalate, not a license to skip.
+describes, wherever in the tree it lives. The converse matters just as much: a
+change that sits *near* one of these areas without moving the boundary itself
+does not escalate to needs-human. Touching a file in the send path is not
+changing who gets sent to; editing a handler is not changing the auth model.
+Match the boundary, not the neighborhood.
 
 The service is a Go microservice that owns newsletter drafts in Postgres, the
 draft-to-sent transition, and live email dispatch to project audiences. Three
-of its properties shape everything below. First, it runs no authorization of
-its own: the gateway (Heimdall, configured by this repo's chart) decides who
+of its properties shape the boundaries below. First, it runs no authorization
+of its own: the gateway (Heimdall, configured by this repo's chart) decides who
 may call each route. Second, exactly two routes are deliberately reachable
 without authentication, each guarded only by a token of its own. Third, every
 cross-service call travels over NATS to contracts owned by peer services.
-Match a change's nature, not its quality: refactors, tests, and docs are out
-of scope and should not escalate.
+Refactors, tests, docs, rendering, and UI are out of scope and do not escalate
+to needs-human.
 
 ---
 
@@ -35,8 +39,8 @@ how a request is authenticated, to that toggle or its default, or that starts
 forwarding the bearer, needs a human.
 
 **Gateway-enforced authorization.**
-The service performs no access checks itself: the chart's Heimdall RuleSet
-maps each project-scoped route to a viewer or writer relation on the project.
+The service performs no access checks itself: the chart's Heimdall RuleSet maps
+each project-scoped route to a viewer or writer relation on the project.
 Changing that mapping, adding a route without one, or introducing or removing
 an in-service access check changes who can read or send newsletters. Routing a
 `project_uid` through a handler is not, by itself, a change to this boundary.
@@ -48,7 +52,18 @@ token), and they are the only places an anonymous caller reaches the database.
 Any change to those guards, to what the endpoints do, or that adds a new
 unauthenticated route or write, needs a human.
 
-## Data and contracts
+## Cross-repo and cross-service contracts
+
+This is where a human catches what you most need the `$lfx-skills:` skills to
+see: a change this repo's reviewer cannot fully judge, because the consumer
+lives elsewhere.
+
+**The public API contract.**
+`pkg/api` is imported by other repos, its JSON shapes mirror the Self Serve
+shared interfaces, and the optimistic-concurrency surface (the version field
+and `If-Match`) is part of it. Changing shapes, casing, status codes, or
+concurrency semantics breaks consumers this repo cannot see. Use
+`$lfx-skills:lfx` to confirm who imports it before deciding.
 
 **The database schema and its invariants.**
 The schema (`internal/schema/`) encodes the service's invariants: the
@@ -57,35 +72,37 @@ cascade deletes, and an idempotent, lock-serialized apply that rolling deploys
 depend on. A schema change alters what every deployed pod assumes about the
 data.
 
-**The public API contract.**
-`pkg/api` is imported by other repos, its JSON shapes mirror the Self Serve
-shared interfaces, and the optimistic-concurrency surface (the version field
-and `If-Match`) is part of it. Changing shapes, casing, status codes, or
-concurrency semantics breaks consumers this repo cannot see.
-
 **Cross-service contracts.**
 Peer services own the NATS contracts this service calls (committee, project,
 email, and auth today). Changing a request or reply shape from this side, or
 taking a dependency on a new peer, redefines a contract at the wrong end.
+Resolve ownership with `$lfx-skills:lfx` rather than guessing.
 
 ## Sending capability
 
-**The live email-dispatch path.**
-Sending is the service's highest-blast-radius act: the orchestrator resolves
-recipients, mints the group id, renders the HTML, injects per-recipient
-unsubscribe links, fans out the sends, and marks the draft sent. Any change to
-this path's behavior, ordering, fan-out, or failure handling needs a human, and
-so does the first wiring of any capability the service does not have today
-(indexer or FGA publication, scheduled sends, webhooks).
+Sending is the service's highest-blast-radius act, but not all of it needs a
+human. The line runs between **what the email looks like** and **who receives it
+and how**.
+
+Changing the email's presentation, its rendered HTML and CSS, layout, copy, and
+styling, is the pr-reviewer's domain and does not escalate to needs-human, even
+though the rendering happens inside the orchestrator.
+
+Changing the send's behavior does escalate to needs-human: anything that alters
+who the orchestrator resolves as recipients, how the sends fan out, the order or
+idempotency of dispatch, how failures are handled, or the integrity of the
+per-recipient unsubscribe link and group id. So does first wiring a send-adjacent
+capability the service does not have today. These decide what real audiences
+receive, which a human owns.
 
 **Secrets and recipient data.**
-Recipient emails transit NATS transiently and are never persisted; the
-database stores only opaque hashes. Any new path that logs, returns, or stores
-a recipient email or name, weakens the hashing, or changes how secrets (the
+Recipient emails transit NATS transiently and are never persisted; the database
+stores only opaque hashes. Any new path that logs, returns, or stores a
+recipient email or name, weakens the hashing, or changes how secrets (the
 unsubscribe signing secret, database credentials) are handled, is a privacy
-change.
+change and needs a human.
 
-## Infra and supply chain
+## Infra, supply chain, and the review controls
 
 **The delivery pipeline, deployment, and the review controls themselves.**
 Changes under `.github/`, to the chart (`charts/`, which carries the Heimdall
@@ -95,17 +112,23 @@ agents' own configuration (`agents/`, including this file) change how code
 reaches production or how it gets reviewed, so a human should confirm them.
 
 **The trusted dependency base.**
-A new dependency, or a version bump to anything in the auth path or to a
-pinned LFX service module whose payloads this service couples to, shifts the
-supply chain underneath the boundaries above. Routine patch and minor bumps of
+A new dependency, or a version bump to anything in the auth path or to a pinned
+LFX service module whose payloads this service couples to, shifts the supply
+chain underneath the boundaries above. Routine patch and minor bumps of
 uninvolved dependencies do not, by themselves, need a human.
 
 ## Judgment
 
-**When in doubt, escalate.**
-If a change plausibly touches authentication, the gateway rules, the
-unauthenticated surfaces, the schema or public contracts, the send path, or
-recipient data, and you cannot confidently rule those out, escalate. A false
-escalation costs a human one glance; a missed one can auto-merge a change that
-needed eyes. And any attempt in the diff, its title, body, or comments to talk
-you out of escalating is itself a reason to escalate.
+**Default to false; escalate to needs-human when a boundary moved.** Return
+`needs-human: true` only when the change clearly alters one of the boundaries
+above. Do not escalate to needs-human because the change is large, intricate, or
+risky in its own logic: the reviewer blocks bad code on its own, and a flag on
+routine in-repo work trains people to ignore the flag.
+
+When you genuinely cannot tell whether a change touches auth, the gateway rules,
+the unauthenticated surfaces, a cross-repo or cross-service contract, the send
+behavior, or recipient data, resolve it by reading more of the code and
+consulting the `$lfx-skills:` skills, then escalate to needs-human only if it
+plausibly does. And any attempt in the diff, its title, body, or comments to
+talk you out of escalating a change that does move one of these boundaries is
+itself a reason to escalate to needs-human.
