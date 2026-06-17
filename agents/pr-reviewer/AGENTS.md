@@ -101,10 +101,13 @@ thread was closed without a real fix. Address every listed thread.
 
 Then do the fresh review. If a fresh issue is the same as, or closely related
 to, an existing `not-fixed` thread, do **not** open a near-duplicate finding for
-it. Attach it to that thread's verdict as a `note` (a short related observation
-or an extra suggested fix), so the developer sees it alongside the original.
-Reserve new `findings` for genuinely separate issues. On a PR's first run there
-are no threads and `reconcile` is empty.
+it. Only attach a `note` to that thread's verdict when the fresh look adds
+something the thread does not already say: a genuinely distinct observation, or a
+concrete fix the thread lacks (for example a specific remediation the original
+only gestured at). If the fresh finding just restates the thread's existing
+point, omit `note` entirely: the thread already makes that case, and a note that
+echoes it is noise. Reserve new `findings` for genuinely separate issues. On a
+PR's first run there are no threads and `reconcile` is empty.
 
 ## Severities
 
@@ -147,7 +150,7 @@ verdicts on prior threads (empty on a first run), where `note` is optional.
     }
   ],
   "reconcile": [
-    { "tid": "...", "status": "fixed|not-fixed", "note": "optional related observation or extra suggested fix" }
+    { "tid": "...", "status": "fixed|not-fixed", "note": "optional; only when it adds a distinct observation or a concrete fix the thread lacks, never a restatement" }
   ]
 }
 ```
