@@ -298,7 +298,7 @@ func EmailHTML(input Chrome) string {
 </style>
 </head>
 <body style="margin:0;padding:0;background-color:` + colorGray50 + `;font-family:` + fontStack + `;">
-<table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="background-color:` + colorGray50 + `;padding:16px 8px;">
+<table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="background-color:` + colorGray50 + `;padding:16px 12px;">
 <tr>
 <td align="center">
 <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="width:100%;max-width:680px;background-color:` + colorWhite + `;border:1px solid ` + colorGray200 + `;border-radius:8px;overflow:hidden;">
