@@ -228,7 +228,7 @@ func (r *PostgresNewsletterRepo) RecordOpen(ctx context.Context, newsletterID uu
 	}
 	if _, err := r.db.NewInsert().
 		Model(open).
-		On("CONFLICT ON CONSTRAINT uq_opens_newsletter_recipient_hour DO NOTHING").
+		On("CONFLICT (newsletter_id, recipient_hash, opened_at_hour) DO NOTHING").
 		Exec(ctx); err != nil {
 		return fmt.Errorf("record open: %w", err)
 	}
