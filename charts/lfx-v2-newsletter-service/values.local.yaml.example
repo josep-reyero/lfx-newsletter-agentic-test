@@ -13,9 +13,16 @@ replicaCount: 1
 
 app:
   logLevel: debug
-  committeeServiceURL: "http://lfx-api.lfx.svc.cluster.local"
+  # NATS endpoint for the committee/project/email upstream clients.
+  nats:
+    url: "nats://lfx-platform-nats.lfx.svc.cluster.local:4222"
   requireUserAuth: false   # local dev only; production must validate JWTs
   jwksURL: ""
+
+# Local dev convenience: render the RuleSet with allow_all instead of OpenFGA.
+# NEVER do this outside a trusted local cluster — it disables route authorization.
+openfga:
+  enabled: false
 
 # Standalone local deployment: chart provisions both the Cluster and the Database CRs.
 database:

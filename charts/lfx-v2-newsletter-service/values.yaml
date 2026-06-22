@@ -213,11 +213,15 @@ heimdall:
   # / heimdall). Leave false when another chart owns the middleware.
   add_middleware: false
 
-# openfga configures OpenFGA fine-grained authorization. The newsletter
-# RuleSet currently authorizes via service-layer checks rather than direct
-# OpenFGA lookups, so this is reserved for future use.
+# openfga configures OpenFGA fine-grained authorization for the Heimdall
+# RuleSet. Newsletter-service performs NO in-process authorization — every
+# protected `/projects/{project_uid}/...` route relies on the gateway enforcing
+# `project:{project_uid}` via OpenFGA. Defaulting this to true keeps protected
+# routes authorized out of the box; setting it false renders the RuleSet with
+# `allow_all`, which leaves those routes unauthenticated and must only be used
+# in trusted local/dev environments.
 openfga:
-  enabled: false
+  enabled: true
 
 # externalSecretsOperator gates the ExternalSecret + SecretStore templates.
 # Defaults to disabled; enable when wiring NATS or other AWS-Secrets-Manager

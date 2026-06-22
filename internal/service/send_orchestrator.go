@@ -123,6 +123,12 @@ func (o *SendOrchestrator) SendNewsletter(ctx context.Context, in SendNewsletter
 	if err != nil {
 		return nil, fmt.Errorf("resolve recipients: %w", err)
 	}
+	// A send with no resolved recipients must not finalize the draft as `sent`:
+	// there is nothing to deliver, and flipping status would strand the draft as
+	// unsendable. Reject so the author can fix the committee selection and retry.
+	if len(recipients) == 0 {
+		return nil, fmt.Errorf("%w: no recipients resolved for the selected committees", domain.ErrInvalidRequest)
+	}
 
 	// Project metadata is a required upstream for the recipient-facing email
 	// chrome. A timeout or not-found must fail the send before any mail goes out,

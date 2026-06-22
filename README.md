@@ -283,7 +283,7 @@ All newsletter routes are project-scoped under `/projects/{project_uid}`.
 | POST   | `/projects/{project_uid}/newsletters/recipient-count`        | preview unique recipient count               |
 | POST   | `/projects/{project_uid}/newsletters/recipients`             | preview recipient list                       |
 | POST   | `/projects/{project_uid}/newsletters/test-send`              | dispatch a single test email                 |
-| GET    | `/projects/{project_uid}/newsletter-analytics/{newsletter_uid}` | per-newsletter analytics (opens, recipients) |
+| GET    | `/projects/{project_uid}/newsletters/{newsletter_uid}/analytics` | per-newsletter analytics (opens, recipients) |
 | GET    | `/projects/{project_uid}/newsletter-opens/{newsletter_uid}`  | open-tracking pixel (unauthenticated GIF)    |
 
 Optimistic concurrency control: every draft carries an integer `version`
