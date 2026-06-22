@@ -120,6 +120,14 @@ func (o *SendOrchestrator) SendNewsletter(ctx context.Context, in SendNewsletter
 	if err != nil {
 		return nil, fmt.Errorf("resolve recipients: %w", err)
 	}
+	if len(recipients) == 0 {
+		slog.WarnContext(ctx, "newsletter send has no resolved recipients; leaving draft retryable",
+			"newsletter_id", draft.ID,
+			"project_uid", draft.ProjectUID,
+			"committee_count", len(draft.CommitteeUIDs),
+		)
+		return nil, pkgerrors.NewValidation("newsletter has no resolved recipients")
+	}
 
 	projectName, _ := o.project.Name(ctx, draft.ProjectUID)
 	if projectName == "" {

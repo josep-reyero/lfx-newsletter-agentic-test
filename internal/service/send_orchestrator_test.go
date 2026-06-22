@@ -122,3 +122,52 @@ func TestSendNewsletter_AllFanoutFailuresDoesNotMarkSent(t *testing.T) {
 		t.Fatalf("email sends: got %d, want 2", email.sends)
 	}
 }
+
+func TestSendNewsletter_NoResolvedRecipientsDoesNotMarkSent(t *testing.T) {
+	projectUID := "63f32fa9-b1be-4b1a-9a1f-98fb2dd34870"
+	newsletterID := uuid.New()
+	repo := &sendRepoFake{
+		newsletter: &model.Newsletter{
+			ID:            newsletterID,
+			ProjectUID:    projectUID,
+			Subject:       "Quarterly update",
+			BodyHTML:      "<p>Hello</p>",
+			EDReplyEmail:  "ed@example.org",
+			CommitteeUIDs: []string{"committee-1"},
+			Status:        model.StatusDraft,
+			Version:       7,
+		},
+	}
+	email := &sendEmailFake{}
+	orchestrator := NewSendOrchestrator(SendOrchestratorConfig{
+		Repo:          repo,
+		Committee:     sendCommitteeFake{},
+		Project:       sendProjectFake{},
+		Email:         email,
+		Concurrency:   2,
+		FanoutEnabled: true,
+	})
+
+	got, err := orchestrator.SendNewsletter(context.Background(), SendNewsletterInput{
+		ProjectUID:      projectUID,
+		NewsletterID:    newsletterID,
+		ExpectedVersion: 7,
+		EDName:          "Executive Director",
+	})
+	if err == nil {
+		t.Fatal("SendNewsletter returned nil error, want validation error")
+	}
+	if got != nil {
+		t.Fatalf("SendNewsletter result: got %#v, want nil", got)
+	}
+	var validation pkgerrors.Validation
+	if !errors.As(err, &validation) {
+		t.Fatalf("SendNewsletter error = %T %[1]v, want Validation", err)
+	}
+	if repo.markSentCalls != 0 {
+		t.Fatalf("MarkSent calls: got %d, want 0", repo.markSentCalls)
+	}
+	if email.sends != 0 {
+		t.Fatalf("email sends: got %d, want 0", email.sends)
+	}
+}
