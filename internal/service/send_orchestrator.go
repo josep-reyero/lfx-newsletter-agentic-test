@@ -67,8 +67,12 @@ type SendDraftInput struct {
 // recipient against lfx-v2-email-service); this method is now a pure state
 // transition.
 func (o *SendOrchestrator) SendDraft(ctx context.Context, in SendDraftInput) (*model.Newsletter, error) {
-	if strings.TrimSpace(in.GroupID) == "" {
+	groupID := strings.TrimSpace(in.GroupID)
+	if groupID == "" {
 		return nil, fmt.Errorf("%w: groupId is required", domain.ErrInvalidRequest)
+	}
+	if _, err := uuid.Parse(groupID); err != nil {
+		return nil, fmt.Errorf("%w: groupId must be a valid UUID", domain.ErrInvalidRequest)
 	}
 
 	draft, err := o.repo.Get(ctx, in.DraftID)
@@ -87,14 +91,14 @@ func (o *SendOrchestrator) SendDraft(ctx context.Context, in SendDraftInput) (*m
 		return nil, fmt.Errorf("resolve recipients: %w", err)
 	}
 
-	updated, markErr := o.repo.MarkSent(ctx, draft.ID, time.Now().UTC(), len(recipients), in.GroupID, draft.Version)
+	updated, markErr := o.repo.MarkSent(ctx, draft.ID, time.Now().UTC(), len(recipients), groupID, draft.Version)
 	if markErr != nil {
 		return nil, fmt.Errorf("mark sent: %w", markErr)
 	}
 
 	slog.InfoContext(ctx, "draft marked sent",
 		"draft_id", draft.ID,
-		"group_id", in.GroupID,
+		"group_id", groupID,
 		"total_recipients", len(recipients),
 	)
 
