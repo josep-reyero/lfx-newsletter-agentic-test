@@ -216,7 +216,7 @@ internal/domain/
 
 internal/service/
 ├── newsletter.go             # CRUD + validation + state transitions
-└── send_orchestrator.go      # resolve recipients, mark draft sent (no email dispatch)
+└── send_orchestrator.go      # resolve recipients, fan out via email-service, mark sent
 
 internal/repository/
 └── postgres.go               # bun-backed NewsletterRepository with optimistic locking
@@ -277,10 +277,10 @@ production (per-service Postgres roles with least-privilege secrets).
 | GET    | `/newsletters/drafts/{id}`            | fetch draft (returns ETag)                   |
 | PUT    | `/newsletters/drafts/{id}`            | update draft (requires If-Match)             |
 | DELETE | `/newsletters/drafts/{id}`            | delete draft                                 |
-| POST   | `/newsletters/drafts/{id}/send`       | mark draft as sent (no email)                |
+| POST   | `/newsletters/drafts/{id}/send`       | fan out to recipients via email-service, mark sent |
 | POST   | `/newsletters/recipient-count`        | preview unique recipient count               |
 | POST   | `/newsletters/recipients`             | preview recipient list                       |
-| POST   | `/newsletters/test-send`              | validate-only stub (no email)                |
+| POST   | `/newsletters/test-send`              | send a test email via email-service          |
 | GET    | `/newsletters`                        | unified list of newsletters for a context    |
 | GET    | `/newsletter-analytics/{id}`          | per-newsletter analytics (opens, recipients) |
 | GET    | `/newsletter-opens/{id}`              | open-tracking pixel (unauthenticated GIF)    |
