@@ -68,8 +68,8 @@ func (d *EmailDispatcher) SendEmail(ctx context.Context, in port.SendEmailInput)
 
 // GetEngagement fetches per-group engagement totals from email-service.
 //
-// Note: email-service does not currently report unique opens — UniqueOpens is
-// populated from the local newsletter_opens table by the analytics service.
+// Note: the scalar engagement summary does not expose DailyOpens or
+// UniqueOpens; AnalyticsService derives those from GetStatusByGroupID.
 func (d *EmailDispatcher) GetEngagement(ctx context.Context, groupID string) (*port.EmailEngagement, error) {
 	if groupID == "" {
 		return nil, pkgerrors.NewValidation("group_id is required")
@@ -111,7 +111,7 @@ func (d *EmailDispatcher) GetEngagement(ctx context.Context, groupID string) (*p
 // JSON array of EmailRecipientRecord (one per email_id in the group).
 //
 // Used by AnalyticsService to populate DailyOpens (bucketed by OpenedAt) and
-// UniqueOpens (count of records where Opened == true) — the scalar engagement
+// UniqueOpens (deduplicated by recipient address) — the scalar engagement
 // summary doesn't expose either.
 func (d *EmailDispatcher) GetStatusByGroupID(ctx context.Context, groupID string) ([]port.EmailRecipientRecord, error) {
 	if groupID == "" {

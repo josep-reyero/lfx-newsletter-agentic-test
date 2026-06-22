@@ -7,6 +7,8 @@ import (
 	"context"
 	"log/slog"
 	"sort"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -118,26 +120,38 @@ func (a *AnalyticsService) Get(ctx context.Context, projectUID string, newslette
 }
 
 // aggregatePerRecipient buckets per-recipient open events into a sorted
-// DailyOpens series and counts unique opens (one per recipient that ever
-// opened). Since email-service's deployed schema carries a single LastOpened
-// timestamp per recipient (not a per-open event list), Opens and UniqueOpens
-// per bucket are equal — one bucketed event per recipient.
+// DailyOpens series and counts unique opens (one per recipient address that
+// ever opened). Since email-service's deployed schema carries a single
+// LastOpened timestamp per sent email record, Opens counts opened records while
+// UniqueOpens deduplicates duplicate sends to the same recipient address.
 //
 // Returns the last observed open timestamp so callers can advance LastEventAt.
 func aggregatePerRecipient(records []port.EmailRecipientRecord) (int, []model.DailyOpens, *time.Time) {
 	type bucket struct {
-		date        time.Time
-		opens       int
-		uniqueOpens int
+		date             time.Time
+		opens            int
+		uniqueOpens      int
+		uniqueRecipients map[string]struct{}
 	}
 	buckets := map[string]*bucket{}
+	uniqueRecipients := map[string]struct{}{}
 	unique := 0
 	var lastEvent *time.Time
-	for _, r := range records {
+	for i, r := range records {
 		if !r.Opened || r.LastOpened == nil {
 			continue
 		}
-		unique++
+		recipientKey := strings.ToLower(strings.TrimSpace(r.To))
+		if recipientKey == "" {
+			recipientKey = "email_id:" + strings.TrimSpace(r.EmailID)
+		}
+		if recipientKey == "email_id:" {
+			recipientKey = "record:" + strconv.Itoa(i)
+		}
+		if _, seen := uniqueRecipients[recipientKey]; !seen {
+			uniqueRecipients[recipientKey] = struct{}{}
+			unique++
+		}
 		opened := r.LastOpened.UTC()
 		if lastEvent == nil || opened.After(*lastEvent) {
 			cp := opened
@@ -147,11 +161,14 @@ func aggregatePerRecipient(records []port.EmailRecipientRecord) (int, []model.Da
 		b, ok := buckets[key]
 		if !ok {
 			day, _ := time.Parse(dayBucketLayout, key)
-			b = &bucket{date: day}
+			b = &bucket{date: day, uniqueRecipients: map[string]struct{}{}}
 			buckets[key] = b
 		}
 		b.opens++
-		b.uniqueOpens++
+		if _, seen := b.uniqueRecipients[recipientKey]; !seen {
+			b.uniqueRecipients[recipientKey] = struct{}{}
+			b.uniqueOpens++
+		}
 	}
 	daily := make([]model.DailyOpens, 0, len(buckets))
 	for _, b := range buckets {

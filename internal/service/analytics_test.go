@@ -103,7 +103,7 @@ func TestAnalyticsGet_DailyOpensFromGroupStatus(t *testing.T) {
 			GroupID:   groupID,
 			TotalSent: 5,
 			Delivered: 5,
-			Opened:    3,
+			Opened:    4,
 			Failed:    0,
 		},
 		records: []port.EmailRecipientRecord{
@@ -112,6 +112,7 @@ func TestAnalyticsGet_DailyOpensFromGroupStatus(t *testing.T) {
 			{EmailID: "e3", To: "c@x", Delivered: true, Opened: true, LastOpened: &day2Open},
 			{EmailID: "e4", To: "d@x", Delivered: true, Opened: false},
 			{EmailID: "e5", To: "e@x", Delivered: true, Opened: false},
+			{EmailID: "e6", To: "A@X", Delivered: true, Opened: true, LastOpened: &day2Open},
 		},
 	}
 
@@ -123,8 +124,8 @@ func TestAnalyticsGet_DailyOpensFromGroupStatus(t *testing.T) {
 	if got.UniqueOpens != 3 {
 		t.Errorf("UniqueOpens: got %d, want 3", got.UniqueOpens)
 	}
-	if got.TotalOpens != 3 {
-		t.Errorf("TotalOpens: got %d, want 3 (overlaid from engagement.Opened)", got.TotalOpens)
+	if got.TotalOpens != 4 {
+		t.Errorf("TotalOpens: got %d, want 4 (overlaid from engagement.Opened)", got.TotalOpens)
 	}
 	if len(got.DailyOpens) != 2 {
 		t.Fatalf("DailyOpens length: got %d, want 2 (one bucket per UTC day)", len(got.DailyOpens))
@@ -138,8 +139,8 @@ func TestAnalyticsGet_DailyOpensFromGroupStatus(t *testing.T) {
 	if !got.DailyOpens[1].Date.Equal(time.Date(2026, 6, 2, 0, 0, 0, 0, time.UTC)) {
 		t.Errorf("DailyOpens[1].Date: got %v, want 2026-06-02 UTC", got.DailyOpens[1].Date)
 	}
-	if got.DailyOpens[1].Opens != 1 || got.DailyOpens[1].UniqueOpens != 1 {
-		t.Errorf("DailyOpens[1]: got opens=%d unique=%d, want 1/1", got.DailyOpens[1].Opens, got.DailyOpens[1].UniqueOpens)
+	if got.DailyOpens[1].Opens != 2 || got.DailyOpens[1].UniqueOpens != 2 {
+		t.Errorf("DailyOpens[1]: got opens=%d unique=%d, want 2/2", got.DailyOpens[1].Opens, got.DailyOpens[1].UniqueOpens)
 	}
 	wantRate := 3.0 / 5.0
 	if got.OpenRate != wantRate {
