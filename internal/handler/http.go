@@ -24,18 +24,26 @@ import (
 type Handler struct {
 	newsletter      *service.NewsletterService
 	send            *service.SendOrchestrator
+	analytics       *service.AnalyticsService
 	db              *sql.DB
 	auth            *AuthValidator
 	requireUserAuth bool
+	natsReady       func() error
 }
 
 // Config wires a Handler.
 type Config struct {
 	Newsletter      *service.NewsletterService
 	Send            *service.SendOrchestrator
+	Analytics       *service.AnalyticsService
 	DB              *sql.DB
 	Auth            *AuthValidator
 	RequireUserAuth bool
+	// NATSReady reports whether the shared NATS client is connected. NATS is a
+	// required runtime dependency (recipient resolution, project metadata, email
+	// dispatch, analytics), so /readyz fails when it is unreachable. Optional —
+	// nil skips the NATS check (e.g. tests or NATS-less local runs).
+	NATSReady func() error
 }
 
 // New wires a Handler with the given dependencies.
@@ -43,13 +51,24 @@ func New(cfg Config) *Handler {
 	return &Handler{
 		newsletter:      cfg.Newsletter,
 		send:            cfg.Send,
+		analytics:       cfg.Analytics,
 		db:              cfg.DB,
 		auth:            cfg.Auth,
 		requireUserAuth: cfg.RequireUserAuth,
+		natsReady:       cfg.NATSReady,
 	}
 }
 
 // Routes returns a fully-wired http.Handler with all newsletter routes registered.
+//
+// All authenticated paths are project-scoped (`/projects/{project_uid}/...`)
+// so the Heimdall ruleset can gate by `project:{project_uid}` extracted from
+// `Request.URL.Captures.project_uid`. Drafts and sent newsletters share one
+// resource; status is a field on the row, not a sub-path.
+//
+// The open-pixel endpoint also carries `project_uid` for path consistency,
+// but Heimdall lets it through anonymously — recipients clicking the tracker
+// have no session.
 func (h *Handler) Routes() http.Handler {
 	mux := http.NewServeMux()
 
@@ -57,29 +76,26 @@ func (h *Handler) Routes() http.Handler {
 	mux.HandleFunc("GET /livez", h.Livez)
 	mux.HandleFunc("GET /readyz", h.Readyz)
 
-	// Newsletter endpoints — JWT auth via withAuth().
-	mux.Handle("POST /newsletters/drafts", h.withAuth(http.HandlerFunc(h.CreateDraft)))
-	mux.Handle("GET /newsletters/drafts", h.withAuth(http.HandlerFunc(h.ListDrafts)))
-	mux.Handle("GET /newsletters/drafts/{id}", h.withAuth(http.HandlerFunc(h.GetDraft)))
-	mux.Handle("PUT /newsletters/drafts/{id}", h.withAuth(http.HandlerFunc(h.UpdateDraft)))
-	mux.Handle("DELETE /newsletters/drafts/{id}", h.withAuth(http.HandlerFunc(h.DeleteDraft)))
-	mux.Handle("POST /newsletters/drafts/{id}/send", h.withAuth(http.HandlerFunc(h.SendDraft)))
+	// Newsletter CRUD — JWT auth via withAuth().
+	mux.Handle("POST /projects/{project_uid}/newsletters", h.withAuth(http.HandlerFunc(h.CreateNewsletter)))
+	mux.Handle("GET /projects/{project_uid}/newsletters", h.withAuth(http.HandlerFunc(h.ListNewsletters)))
+	mux.Handle("GET /projects/{project_uid}/newsletters/{newsletter_uid}", h.withAuth(http.HandlerFunc(h.GetNewsletter)))
+	mux.Handle("PUT /projects/{project_uid}/newsletters/{newsletter_uid}", h.withAuth(http.HandlerFunc(h.UpdateNewsletter)))
+	mux.Handle("DELETE /projects/{project_uid}/newsletters/{newsletter_uid}", h.withAuth(http.HandlerFunc(h.DeleteNewsletter)))
+	mux.Handle("POST /projects/{project_uid}/newsletters/{newsletter_uid}/send", h.withAuth(http.HandlerFunc(h.SendNewsletter)))
 
-	mux.Handle("POST /newsletters/recipient-count", h.withAuth(http.HandlerFunc(h.RecipientCount)))
-	mux.Handle("POST /newsletters/recipients", h.withAuth(http.HandlerFunc(h.Recipients)))
-	mux.Handle("POST /newsletters/test-send", h.withAuth(http.HandlerFunc(h.TestSend)))
+	// Recipient resolution + test send — JWT auth.
+	mux.Handle("POST /projects/{project_uid}/newsletters/recipient-count", h.withAuth(http.HandlerFunc(h.RecipientCount)))
+	mux.Handle("POST /projects/{project_uid}/newsletters/recipients", h.withAuth(http.HandlerFunc(h.Recipients)))
+	mux.Handle("POST /projects/{project_uid}/newsletters/test-send", h.withAuth(http.HandlerFunc(h.TestSend)))
 
-	// Unified list + per-newsletter analytics — JWT auth.
-	// Note: paths intentionally avoid the /newsletters/{id}/... shape because
-	// Go's mux flags it as ambiguous with the existing /newsletters/drafts/{id}
-	// pattern (drafts could be treated as {id} or as a literal segment).
-	mux.Handle("GET /newsletters", h.withAuth(http.HandlerFunc(h.ListNewsletters)))
-	mux.Handle("GET /newsletter-analytics/{id}", h.withAuth(http.HandlerFunc(h.GetAnalytics)))
+	// Per-newsletter analytics — JWT auth.
+	mux.Handle("GET /projects/{project_uid}/newsletters/{newsletter_uid}/analytics", h.withAuth(http.HandlerFunc(h.GetAnalytics)))
 
 	// Open tracking pixel — intentionally unauthenticated; requested by the
 	// recipient's email client which has no session. Identity comes from the
 	// hash in the query string.
-	mux.HandleFunc("GET /newsletter-opens/{id}", h.OpenPixel)
+	mux.HandleFunc("GET /projects/{project_uid}/newsletter-opens/{newsletter_uid}", h.OpenPixel)
 
 	// Outermost middleware first: request ID so it appears on every log line,
 	// then request log so it captures status + duration.
@@ -132,7 +148,14 @@ func classifyError(err error) (int, string) {
 	if status, code, ok := classifyAuthError(err); ok {
 		return status, code
 	}
-	var svcUnavailable pkgerrors.ServiceUnavailable
+	// Typed pkg/errors surfaced by the NATS upstream clients (committee, project,
+	// email). These are caller-facing and must map to a proper status, not 500.
+	var (
+		svcUnavailable pkgerrors.ServiceUnavailable
+		notFound       pkgerrors.NotFound
+		validation     pkgerrors.Validation
+		conflict       pkgerrors.Conflict
+	)
 	switch {
 	case errors.Is(err, domain.ErrNotFound):
 		return http.StatusNotFound, "not_found"
@@ -140,19 +163,26 @@ func classifyError(err error) (int, string) {
 		return http.StatusPreconditionFailed, "version_mismatch"
 	case errors.Is(err, domain.ErrAlreadySent):
 		return http.StatusConflict, "already_sent"
+	case errors.Is(err, domain.ErrSendInProgress):
+		return http.StatusConflict, "send_in_progress"
+	case errors.Is(err, domain.ErrForbidden):
+		return http.StatusForbidden, "forbidden"
 	case errors.Is(err, domain.ErrInvalidRequest):
 		return http.StatusBadRequest, "invalid_request"
 	case errors.As(err, &svcUnavailable):
-		// Upstream / dependency failure (e.g. /query/resources returned 5xx).
-		// Surface as 503 so callers can distinguish a transient upstream
-		// problem from a true internal bug.
 		return http.StatusServiceUnavailable, "service_unavailable"
+	case errors.As(err, &notFound):
+		return http.StatusNotFound, "not_found"
+	case errors.As(err, &validation):
+		return http.StatusBadRequest, "invalid_request"
+	case errors.As(err, &conflict):
+		return http.StatusConflict, "conflict"
 	default:
 		return http.StatusInternalServerError, "internal_error"
 	}
 }
 
-// maxRequestBodyBytes caps inbound JSON bodies. Newsletter bodyHtml is the
+// maxRequestBodyBytes caps inbound JSON bodies. Newsletter body_html is the
 // largest legitimate field (capped at 100 KiB in the service layer); 1 MiB
 // gives generous headroom while bounding the per-request allocation when a
 // client streams a hostile payload.

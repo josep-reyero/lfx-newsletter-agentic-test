@@ -10,7 +10,9 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
+	"time"
 )
 
 // AppConfig holds all runtime configuration read from environment variables.
@@ -26,8 +28,27 @@ type AppConfig struct {
 	// pod spec — the env-var interpolation pattern would embed it verbatim.
 	DatabaseURL string
 
-	// Upstream services (required)
-	CommitteeServiceURL string
+	// NATS (required) — single connection used by the email dispatcher,
+	// committee member client, and project metadata client.
+	NATSURL           string
+	NATSTimeout       time.Duration
+	NATSMaxReconnect  int
+	NATSReconnectWait time.Duration
+
+	// SendFanoutEnabled toggles the per-recipient send loop. When false, the
+	// send orchestrator validates inputs and transitions the draft to sent
+	// without dispatching email to recipients. Useful for dev/staging shake-out
+	// of the recipient-resolution path without sending real mail.
+	SendFanoutEnabled bool
+
+	// SendConcurrency caps in-flight per-recipient sends during fan-out.
+	SendConcurrency int
+
+	// PublicAPIBaseURL is the externally reachable base URL of this service
+	// (e.g. https://api.lfx.dev), used to build the per-recipient open-tracking
+	// pixel URL injected into outbound newsletter HTML. When empty, open-tracking
+	// pixels are omitted (engagement still comes from email-service).
+	PublicAPIBaseURL string
 
 	// Auth
 	JWKSURL          string
@@ -40,21 +61,31 @@ type AppConfig struct {
 
 // Defaults centralizes default values referenced from AppConfigFromEnv.
 const (
-	defaultPort = "8080"
+	defaultPort                  = "8080"
+	defaultNATSTimeout           = 10 * time.Second
+	defaultNATSReconnectWaitSecs = 2
+	defaultNATSURL               = "nats://nats:4222"
+	defaultSendConcurrency       = 5
 )
 
 // AppConfigFromEnv reads AppConfig from environment variables, applying defaults
 // where reasonable. It returns an error if a required variable is missing.
 func AppConfigFromEnv() (AppConfig, error) {
 	cfg := AppConfig{
-		Port:                envOr("PORT", defaultPort),
-		LogLevel:            os.Getenv("LOG_LEVEL"),
-		DatabaseURL:         os.Getenv("DATABASE_URL"),
-		CommitteeServiceURL: os.Getenv("COMMITTEE_SERVICE_URL"),
-		JWKSURL:             os.Getenv("JWKS_URL"),
-		ExpectedAudience:    os.Getenv("JWT_AUDIENCE"),
-		RequireUserAuth:     boolOr("REQUIRE_USER_AUTH", true),
-		LFXEnvironment:      os.Getenv("LFX_ENVIRONMENT"),
+		Port:              envOr("PORT", defaultPort),
+		LogLevel:          os.Getenv("LOG_LEVEL"),
+		DatabaseURL:       os.Getenv("DATABASE_URL"),
+		NATSURL:           envOr("NATS_URL", defaultNATSURL),
+		NATSTimeout:       durationOr("NATS_TIMEOUT", defaultNATSTimeout),
+		NATSMaxReconnect:  intOr("NATS_MAX_RECONNECT", -1),
+		NATSReconnectWait: durationOr("NATS_RECONNECT_WAIT", time.Duration(defaultNATSReconnectWaitSecs)*time.Second),
+		SendFanoutEnabled: boolOr("SEND_FANOUT_ENABLED", true),
+		SendConcurrency:   intOr("SEND_CONCURRENCY", defaultSendConcurrency),
+		PublicAPIBaseURL:  strings.TrimRight(strings.TrimSpace(os.Getenv("PUBLIC_API_BASE_URL")), "/"),
+		JWKSURL:           os.Getenv("JWKS_URL"),
+		ExpectedAudience:  os.Getenv("JWT_AUDIENCE"),
+		RequireUserAuth:   boolOr("REQUIRE_USER_AUTH", true),
+		LFXEnvironment:    os.Getenv("LFX_ENVIRONMENT"),
 	}
 
 	// If DATABASE_URL is not set, compose it from PG* env vars in-process so
@@ -69,9 +100,6 @@ func AppConfigFromEnv() (AppConfig, error) {
 	var missing []string
 	if cfg.DatabaseURL == "" {
 		missing = append(missing, "DATABASE_URL (or PGHOST/PGUSER/PGPASSWORD/PGDATABASE)")
-	}
-	if cfg.CommitteeServiceURL == "" {
-		missing = append(missing, "COMMITTEE_SERVICE_URL")
 	}
 	if cfg.RequireUserAuth && cfg.JWKSURL == "" {
 		missing = append(missing, "JWKS_URL (required when REQUIRE_USER_AUTH=true)")
@@ -134,4 +162,28 @@ func boolOr(key string, fallback bool) bool {
 	default:
 		return fallback
 	}
+}
+
+func intOr(key string, fallback int) int {
+	raw := strings.TrimSpace(os.Getenv(key))
+	if raw == "" {
+		return fallback
+	}
+	v, err := strconv.Atoi(raw)
+	if err != nil {
+		return fallback
+	}
+	return v
+}
+
+func durationOr(key string, fallback time.Duration) time.Duration {
+	raw := strings.TrimSpace(os.Getenv(key))
+	if raw == "" {
+		return fallback
+	}
+	d, err := time.ParseDuration(raw)
+	if err != nil {
+		return fallback
+	}
+	return d
 }

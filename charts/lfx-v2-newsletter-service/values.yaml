@@ -45,10 +45,35 @@ app:
   # logLevel is the log level: debug, info, warn, or error.
   logLevel: info
 
-  # committeeServiceURL is the base URL for upstream committee-service calls
-  # (typically the LFX v2 API gateway routing /query/resources to query-service).
-  # REQUIRED in production.
-  committeeServiceURL: ""
+  # nats is the NATS connection used by the email dispatcher, committee
+  # member client, and project metadata client. Newsletter-service makes no
+  # HTTP upstream calls — recipient resolution, project metadata lookup, and
+  # email send are all NATS request/reply.
+  nats:
+    url: "nats://lfx-platform-nats.lfx.svc.cluster.local:4222"
+    # timeout / maxReconnect / reconnectWait fall back to the app defaults
+    # (10s / unlimited / 2s) when empty.
+    timeout: ""
+    maxReconnect: ""
+    reconnectWait: ""
+
+  # send tunes the per-recipient send loop.
+  send:
+    # fanoutEnabled toggles real email dispatch. When false the orchestrator
+    # validates inputs and resolves recipients but does NOT call the
+    # email-service NATS subject — useful for dev/staging shake-out of the
+    # recipient-resolution path without sending real mail.
+    fanoutEnabled: true
+    # concurrency caps in-flight email-service requests during fan-out.
+    # Empty string falls back to the app default (5).
+    concurrency: ""
+
+  # publicAPIBaseURL is the externally reachable base URL of this service, used
+  # to build the per-recipient open-tracking pixel injected into outbound
+  # newsletter HTML. Empty string defaults (in the Deployment) to
+  # https://lfx-api.{{ lfx.domain }}; set to a literal "" override via extraEnv
+  # only if you want to disable local open tracking entirely.
+  publicAPIBaseURL: ""
 
   # jwksURL is the URL of the JWKS endpoint used to verify inbound JWTs.
   # REQUIRED when requireUserAuth=true (default).
@@ -142,12 +167,17 @@ serviceAccount:
   annotations: {}
 
 # networkPolicy controls the Kubernetes NetworkPolicy for this workload.
-# Allows egress to OTel, upstream HTTP services, and Postgres.
+# Allows egress to OTel, NATS (recipient/project/email/analytics calls and
+# startup clients), upstream HTTP/JWKS, and Postgres.
 networkPolicy:
   enabled: true
   otelGRPCPort: 4317
   otelHTTPPort: 4318
   postgresPort: 5432
+  # natsPort is the client port of the NATS server. All upstream committee,
+  # project-metadata, email-dispatch, and analytics calls — plus the startup
+  # clients — go over NATS, so egress must allow it or the pod cannot start.
+  natsPort: 4222
 
 # httpRoute toggles the Gateway API HTTPRoute (templates/httproute.yaml).
 # Disable when deploying behind a different ingress (e.g. plain Service +
@@ -183,11 +213,15 @@ heimdall:
   # / heimdall). Leave false when another chart owns the middleware.
   add_middleware: false
 
-# openfga configures OpenFGA fine-grained authorization. The newsletter
-# RuleSet currently authorizes via service-layer checks rather than direct
-# OpenFGA lookups, so this is reserved for future use.
+# openfga configures OpenFGA fine-grained authorization for the Heimdall
+# RuleSet. Newsletter-service performs NO in-process authorization — every
+# protected `/projects/{project_uid}/...` route relies on the gateway enforcing
+# `project:{project_uid}` via OpenFGA. Defaulting this to true keeps protected
+# routes authorized out of the box; setting it false renders the RuleSet with
+# `allow_all`, which leaves those routes unauthenticated and must only be used
+# in trusted local/dev environments.
 openfga:
-  enabled: false
+  enabled: true
 
 # externalSecretsOperator gates the ExternalSecret + SecretStore templates.
 # Defaults to disabled; enable when wiring NATS or other AWS-Secrets-Manager

@@ -5,22 +5,20 @@ package handler
 
 import (
 	"net/http"
-	"strings"
 
-	"github.com/linuxfoundation/lfx-v2-newsletter-service/internal/domain/model"
 	"github.com/linuxfoundation/lfx-v2-newsletter-service/internal/service"
 	publicapi "github.com/linuxfoundation/lfx-v2-newsletter-service/pkg/api"
 )
 
-// SendDraft handles POST /newsletters/drafts/{id}/send.
+// SendNewsletter handles POST /projects/{project_uid}/newsletters/{newsletter_uid}/send.
 //
-// The request requires If-Match for optimistic locking and a JSON body with
-// the email-service `groupId` minted by lfx-v2-ui before it fanned out the
-// per-recipient sends. The handler persists that group_id on the newsletter
-// row and flips status to sent — it does not dispatch email itself. EDName
-// is taken from the X-User-Name header or falls back to the JWT principal.
-func (h *Handler) SendDraft(w http.ResponseWriter, r *http.Request) {
-	id, err := parseUUID(r.PathValue("id"))
+// Service mints group_id, resolves recipients, fans out emails to email-service
+// via NATS, and persists the status transition. Per-recipient failures are
+// returned in the response so the UI can surface them; the newsletter is still
+// marked sent if any recipients succeeded.
+func (h *Handler) SendNewsletter(w http.ResponseWriter, r *http.Request) {
+	projectUID := r.PathValue("project_uid")
+	id, err := parseUUID(r.PathValue("newsletter_uid"))
 	if err != nil {
 		writeError(r.Context(), w, err)
 		return
@@ -31,16 +29,10 @@ func (h *Handler) SendDraft(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var body publicapi.SendDraftRequest
-	if err := decodeJSON(r, &body); err != nil {
-		writeError(r.Context(), w, err)
-		return
-	}
-
-	updated, err := h.send.SendDraft(r.Context(), service.SendDraftInput{
-		DraftID:         id,
+	result, err := h.send.SendNewsletter(r.Context(), service.SendNewsletterInput{
+		ProjectUID:      projectUID,
+		NewsletterID:    id,
 		ExpectedVersion: expectedVersion,
-		GroupID:         body.GroupID,
 		EDName:          resolveEDName(r),
 	})
 	if err != nil {
@@ -48,18 +40,19 @@ func (h *Handler) SendDraft(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	w.Header().Set("ETag", formatETag(updated.Version))
-	writeJSON(r.Context(), w, http.StatusOK, toAPINewsletter(updated))
+	w.Header().Set("ETag", formatETag(result.Newsletter.Version))
+	writeJSON(r.Context(), w, http.StatusOK, toAPISendResponse(result))
 }
 
-// RecipientCount handles POST /newsletters/recipient-count.
+// RecipientCount handles POST /projects/{project_uid}/newsletters/recipient-count.
 func (h *Handler) RecipientCount(w http.ResponseWriter, r *http.Request) {
+	projectUID := r.PathValue("project_uid")
 	var body publicapi.RecipientCountRequest
 	if err := decodeJSON(r, &body); err != nil {
 		writeError(r.Context(), w, err)
 		return
 	}
-	count, err := h.send.RecipientCount(r.Context(), body.CommitteeUIDs)
+	count, err := h.send.RecipientCount(r.Context(), projectUID, body.CommitteeUIDs)
 	if err != nil {
 		writeError(r.Context(), w, err)
 		return
@@ -67,38 +60,39 @@ func (h *Handler) RecipientCount(w http.ResponseWriter, r *http.Request) {
 	writeJSON(r.Context(), w, http.StatusOK, publicapi.RecipientCountResponse{Count: count})
 }
 
-// Recipients handles POST /newsletters/recipients.
+// Recipients handles POST /projects/{project_uid}/newsletters/recipients.
 func (h *Handler) Recipients(w http.ResponseWriter, r *http.Request) {
+	projectUID := r.PathValue("project_uid")
 	var body publicapi.RecipientsRequest
 	if err := decodeJSON(r, &body); err != nil {
 		writeError(r.Context(), w, err)
 		return
 	}
-	recipients, err := h.send.Recipients(r.Context(), body.CommitteeUIDs)
+	recipients, err := h.send.Recipients(r.Context(), projectUID, body.CommitteeUIDs)
 	if err != nil {
 		writeError(r.Context(), w, err)
 		return
 	}
 	out := publicapi.RecipientsResponse{Recipients: make([]publicapi.Recipient, 0, len(recipients))}
-	for _, r := range recipients {
+	for _, recipient := range recipients {
 		out.Recipients = append(out.Recipients, publicapi.Recipient{
-			Email:     r.Email,
-			FirstName: r.FirstName,
+			Email:     recipient.Email,
+			FirstName: recipient.FirstName,
 		})
 	}
 	writeJSON(r.Context(), w, http.StatusOK, out)
 }
 
-// TestSend handles POST /newsletters/test-send.
+// TestSend handles POST /projects/{project_uid}/newsletters/test-send.
 func (h *Handler) TestSend(w http.ResponseWriter, r *http.Request) {
+	projectUID := r.PathValue("project_uid")
 	var body publicapi.TestSendRequest
 	if err := decodeJSON(r, &body); err != nil {
 		writeError(r.Context(), w, err)
 		return
 	}
 	if err := h.send.TestSend(r.Context(), service.TestSendInput{
-		ContextType:  model.ContextType(body.ContextType),
-		ContextUID:   body.ContextUID,
+		ProjectUID:   projectUID,
 		Subject:      body.Subject,
 		BodyHTML:     body.BodyHTML,
 		ToEmail:      body.ToEmail,
@@ -111,15 +105,34 @@ func (h *Handler) TestSend(w http.ResponseWriter, r *http.Request) {
 	writeJSON(r.Context(), w, http.StatusOK, publicapi.TestSendResponse{OK: true})
 }
 
-// resolveEDName resolves the executive director display name from request
-// metadata. Prefers the X-User-Name header (set by lfx-v2-ui's proxy when
-// available) and falls back to the JWT principal.
+// resolveEDName resolves the executive director display name used in the
+// recipient-facing compliance footer.
+//
+// It is sourced ONLY from the validated JWT principal (UserFromContext), never
+// from a caller-supplied header. The previous X-User-Name preference was
+// spoofable: nothing in this service or the chart guarantees the gateway strips
+// and re-mints that header, so an authenticated writer could forge the sender
+// display name on real newsletter mail. Until that ingress contract is enforced
+// the header is ignored.
 func resolveEDName(r *http.Request) string {
-	if name := strings.TrimSpace(r.Header.Get("X-User-Name")); name != "" {
-		return name
-	}
 	if user := UserFromContext(r.Context()); user != "" {
 		return user
 	}
 	return "Executive Director"
+}
+
+// toAPISendResponse converts a service SendResult into the public API DTO.
+func toAPISendResponse(result *service.SendResult) publicapi.SendNewsletterResponse {
+	failures := make([]publicapi.SendFailure, 0, len(result.Failures))
+	for _, f := range result.Failures {
+		failures = append(failures, publicapi.SendFailure{Email: f.Email, Error: f.Error})
+	}
+	return publicapi.SendNewsletterResponse{
+		Newsletter:      *toAPINewsletter(result.Newsletter),
+		GroupID:         result.GroupID,
+		TotalRecipients: result.TotalRecipients,
+		Sent:            result.Sent,
+		Failed:          result.Failed,
+		Failures:        failures,
+	}
 }

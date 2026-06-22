@@ -22,4 +22,14 @@ var (
 	// ErrAlreadySent indicates a draft has already been sent and cannot be re-sent
 	// or modified.
 	ErrAlreadySent = errors.New("newsletter already sent")
+
+	// ErrSendInProgress indicates a draft has been claimed by the send
+	// orchestrator but has not yet finalized as sent. It cannot be edited or
+	// deleted without risking duplicate or mismatched deliveries.
+	ErrSendInProgress = errors.New("newsletter send in progress")
+
+	// ErrForbidden indicates the caller is authorized for the request's project
+	// but referenced a resource (e.g. a committee) that belongs to a different
+	// project and is therefore out of scope.
+	ErrForbidden = errors.New("forbidden")
 )
