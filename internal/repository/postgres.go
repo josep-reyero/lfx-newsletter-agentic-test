@@ -69,13 +69,12 @@ func (r *PostgresNewsletterRepo) Get(ctx context.Context, id uuid.UUID) (*model.
 	return n, nil
 }
 
-// List returns all newsletters in the given context, newest first.
-func (r *PostgresNewsletterRepo) List(ctx context.Context, contextType model.ContextType, contextUID string) ([]*model.Newsletter, error) {
+// List returns all newsletters in the given project, newest first.
+func (r *PostgresNewsletterRepo) List(ctx context.Context, projectUID string) ([]*model.Newsletter, error) {
 	var rows []*model.Newsletter
 	err := r.db.NewSelect().
 		Model(&rows).
-		Where("context_type = ?", contextType).
-		Where("context_uid = ?", contextUID).
+		Where("project_uid = ?", projectUID).
 		Order("created_at DESC").
 		Scan(ctx)
 	if err != nil {
@@ -99,8 +98,7 @@ func (r *PostgresNewsletterRepo) ListAll(ctx context.Context, filters port.ListF
 
 	q := r.db.NewSelect().
 		Model((*model.Newsletter)(nil)).
-		Where("context_type = ?", filters.ContextType).
-		Where("context_uid = ?", filters.ContextUID).
+		Where("project_uid = ?", filters.ProjectUID).
 		Order("updated_at DESC").
 		Order("id DESC").
 		Limit(limit + 1)
@@ -147,8 +145,7 @@ func (r *PostgresNewsletterRepo) Update(ctx context.Context, n *model.Newsletter
 		// pgdialect.Array forces a Postgres text[] literal; without it bun
 		// json-encodes the slice and PG raises a "malformed array literal".
 		Set("committee_uids = ?", pgdialect.Array(n.CommitteeUIDs)).
-		Set("context_type = ?", n.ContextType).
-		Set("context_uid = ?", n.ContextUID).
+		Set("project_uid = ?", n.ProjectUID).
 		Set("updated_at = now()").
 		Set("version = version + 1").
 		Where("id = ? AND version = ?", n.ID, expectedVersion).
@@ -189,13 +186,14 @@ func (r *PostgresNewsletterRepo) Delete(ctx context.Context, id uuid.UUID) error
 	return nil
 }
 
-// MarkSent transitions a draft to status=sent atomically, gated on the expected
-// version. Captures the audience size and the lfx-v2-email-service group_id
-// at send time so analytics can compute open rates without re-resolving
-// committee membership and can locate the per-recipient engagement records.
+// MarkSent transitions a draft to status=sent atomically. When expectedVersion
+// is non-zero, the transition is also gated on that optimistic-locking version.
+// Captures the audience size and the lfx-v2-email-service group_id at send time
+// so analytics can compute open rates without re-resolving committee membership
+// and can locate the per-recipient engagement records.
 func (r *PostgresNewsletterRepo) MarkSent(ctx context.Context, id uuid.UUID, sentAt time.Time, totalRecipients int, groupID string, expectedVersion int64) (*model.Newsletter, error) {
 	updated := &model.Newsletter{}
-	res, err := r.db.NewUpdate().
+	query := r.db.NewUpdate().
 		Model(updated).
 		Set("status = ?", model.StatusSent).
 		Set("sent_at = ?", sentAt).
@@ -203,9 +201,11 @@ func (r *PostgresNewsletterRepo) MarkSent(ctx context.Context, id uuid.UUID, sen
 		Set("group_id = ?", groupID).
 		Set("updated_at = now()").
 		Set("version = version + 1").
-		Where("id = ? AND version = ? AND status = ?", id, expectedVersion, model.StatusDraft).
-		Returning("*").
-		Exec(ctx)
+		Where("id = ? AND status = ?", id, model.StatusDraft)
+	if expectedVersion != 0 {
+		query = query.Where("version = ?", expectedVersion)
+	}
+	res, err := query.Returning("*").Exec(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("mark sent: %w", err)
 	}
@@ -342,7 +342,7 @@ func (r *PostgresNewsletterRepo) classifyMarkSentMiss(ctx context.Context, id uu
 	if existing.Status == model.StatusSent {
 		return domain.ErrAlreadySent
 	}
-	if existing.Version != expectedVersion {
+	if expectedVersion != 0 && existing.Version != expectedVersion {
 		return domain.ErrVersionMismatch
 	}
 	// Unreachable in practice — fall back to version mismatch.
