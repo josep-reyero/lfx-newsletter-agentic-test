@@ -46,7 +46,7 @@ The central LFX skills are installed read-only at `~/.agents/skills/`. Use them
 to judge cross-repo blast radius, the thing a single-repo reviewer cannot see:
 `$lfx-skills:lfx` for who consumes `pkg/api`, owns the NATS subjects, or couples
 to the schema, and `$lfx-skills:lfx-platform-architecture` for how V2 services
-compose (Heimdall, OpenFGA, NATS, query-service, charts, ArgoCD).
+compose (Heimdall, OpenFGA, NATS, query-service/read paths, charts, ArgoCD).
 
 ## Output contract (`escalation.json`)
 
