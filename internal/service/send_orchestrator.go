@@ -23,8 +23,6 @@ import (
 )
 
 // defaultSendConcurrency caps in-flight email-service requests during fan-out.
-// Mirrors the lfx-v2-ui Express bridge that this orchestrator replaces (a
-// worker pool of 5 also bounded that fan-out).
 const defaultSendConcurrency = 5
 
 // SendOrchestrator coordinates recipient resolution, email-chrome rendering,
@@ -126,7 +124,14 @@ func (o *SendOrchestrator) SendNewsletter(ctx context.Context, in SendNewsletter
 		return nil, fmt.Errorf("resolve recipients: %w", err)
 	}
 
-	projectName, _ := o.project.Name(ctx, draft.ProjectUID)
+	// Project metadata is a required upstream for the recipient-facing email
+	// chrome. A timeout or not-found must fail the send before any mail goes out,
+	// otherwise recipients receive misbranded mail under a placeholder name. We
+	// only accept an explicitly empty name as the supported fallback.
+	projectName, err := o.project.Name(ctx, draft.ProjectUID)
+	if err != nil {
+		return nil, fmt.Errorf("resolve project name: %w", err)
+	}
 	if projectName == "" {
 		projectName = "Project"
 	}
@@ -153,10 +158,17 @@ func (o *SendOrchestrator) SendNewsletter(ctx context.Context, in SendNewsletter
 		return nil, fmt.Errorf("persist send intent: %w", err)
 	}
 
+	// Per-recipient idempotency on retry: if this group already has recipients
+	// accepted by email-service (a prior partially-failed attempt under the same
+	// reused group_id), skip them so we never re-send to an address that already
+	// received the newsletter. A first send sees no prior records and sends to all.
+	alreadySent := o.recipientsAlreadySent(ctx, groupID)
+
 	sent, failed, failures := o.fanOut(ctx, fanOutParams{
 		newsletterID: draft.ID,
 		projectUID:   draft.ProjectUID,
 		recipients:   recipients,
+		alreadySent:  alreadySent,
 		subject:      draft.Subject,
 		htmlBody:     htmlBody,
 		textBody:     textBody,
@@ -234,7 +246,12 @@ func (o *SendOrchestrator) TestSend(ctx context.Context, in TestSendInput) error
 		return fmt.Errorf("%w: to_email is not a valid email: %v", domain.ErrInvalidRequest, err)
 	}
 
-	projectName, _ := o.project.Name(ctx, in.ProjectUID)
+	// Same contract as SendNewsletter: a failed project-metadata lookup must
+	// surface as an upstream error rather than silently sending misbranded mail.
+	projectName, err := o.project.Name(ctx, in.ProjectUID)
+	if err != nil {
+		return fmt.Errorf("resolve project name: %w", err)
+	}
 	if projectName == "" {
 		projectName = "Project"
 	}
@@ -255,7 +272,7 @@ func (o *SendOrchestrator) TestSend(ctx context.Context, in TestSendInput) error
 		)
 		return nil
 	}
-	_, err := o.email.SendEmail(ctx, port.SendEmailInput{
+	_, err = o.email.SendEmail(ctx, port.SendEmailInput{
 		To:      strings.TrimSpace(in.ToEmail),
 		Subject: in.Subject,
 		HTML:    htmlBody,
@@ -364,10 +381,46 @@ type fanOutParams struct {
 	newsletterID uuid.UUID
 	projectUID   string
 	recipients   []model.CommitteeMember
-	subject      string
-	htmlBody     string
-	textBody     string
-	groupID      string
+	// alreadySent is the set of lowercased recipient emails already accepted
+	// under this group on a prior attempt; they are skipped (counted as sent) so
+	// a retry is idempotent per recipient.
+	alreadySent map[string]struct{}
+	subject     string
+	htmlBody    string
+	textBody    string
+	groupID     string
+}
+
+// recipientsAlreadySent returns the set of lowercased recipient emails that
+// email-service has already accepted under groupID. On a first send (no prior
+// records) or when fan-out is disabled, this is empty. A lookup error is logged
+// and treated as "none already sent" — email-service's own per-(group,recipient)
+// handling remains the backstop, and we prefer attempting delivery over silently
+// dropping recipients on a transient analytics error.
+func (o *SendOrchestrator) recipientsAlreadySent(ctx context.Context, groupID string) map[string]struct{} {
+	if !o.fanoutEnabled || o.email == nil || groupID == "" {
+		return nil
+	}
+	records, err := o.email.ListGroupRecipients(ctx, groupID)
+	if err != nil {
+		slog.WarnContext(ctx, "send: could not list prior group recipients; proceeding without skip set",
+			"group_id", groupID, "error", err.Error())
+		return nil
+	}
+	if len(records) == 0 {
+		return nil
+	}
+	out := make(map[string]struct{}, len(records))
+	for _, rec := range records {
+		if rec.Failed {
+			continue // a previously-failed recipient should be retried
+		}
+		email := strings.ToLower(strings.TrimSpace(rec.To))
+		if email != "" {
+			out[email] = struct{}{}
+		}
+	}
+	return out
 }
 
 // fanOut dispatches per-recipient send_email requests to email-service with
@@ -396,6 +449,15 @@ func (o *SendOrchestrator) fanOut(ctx context.Context, p fanOutParams) (sent, fa
 	var wg sync.WaitGroup
 	for _, r := range p.recipients {
 		recipient := r
+		// Idempotent retry: skip recipients already accepted under this group on a
+		// prior attempt. They count as sent so the >=1-delivered gate and analytics
+		// stay correct without re-dispatching mail.
+		if _, done := p.alreadySent[strings.ToLower(strings.TrimSpace(recipient.Email))]; done {
+			mu.Lock()
+			sent++
+			mu.Unlock()
+			continue
+		}
 		// Respect ctx cancellation when acquiring a worker slot. A naked
 		// `sem <- struct{}{}` would block forever (or until a slot frees) even
 		// after the caller cancelled — and then spin up a goroutine per

@@ -137,4 +137,9 @@ type EmailDispatcher interface {
 	SendEmail(ctx context.Context, in SendEmailInput) (emailID string, err error)
 	GetEngagement(ctx context.Context, groupID string) (*EmailEngagement, error)
 	GetStatusByEmailID(ctx context.Context, emailID string) (*EmailRecipientRecord, error)
+	// ListGroupRecipients returns every per-recipient record email-service holds
+	// for a group_id. Used to make a retried send idempotent: recipients already
+	// accepted under the same group are skipped instead of being re-sent. An
+	// empty/unknown group returns an empty slice, not an error.
+	ListGroupRecipients(ctx context.Context, groupID string) ([]EmailRecipientRecord, error)
 }

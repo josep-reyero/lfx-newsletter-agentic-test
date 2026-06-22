@@ -106,6 +106,52 @@ func (d *EmailDispatcher) GetEngagement(ctx context.Context, groupID string) (*p
 	}, nil
 }
 
+// ListGroupRecipients fetches every per-recipient record email-service holds
+// for a group_id. Email-service's get_email_status replies with a JSON array of
+// EmailRecipientRecord when the request carries a group_id (vs a single record
+// for an email_id). An empty reply means the group is unknown / has no records
+// yet, which we return as an empty slice so a first send proceeds normally.
+func (d *EmailDispatcher) ListGroupRecipients(ctx context.Context, groupID string) ([]port.EmailRecipientRecord, error) {
+	if groupID == "" {
+		return nil, pkgerrors.NewValidation("group_id is required")
+	}
+	envelope := emailapi.GetEmailStatusRequest{GroupID: groupID}
+	data, err := json.Marshal(envelope)
+	if err != nil {
+		return nil, pkgerrors.NewUnexpected("marshal get_email_status (group) request", err)
+	}
+	reply, err := d.client.Request(ctx, EmailServiceGetEmailStatusSubject, data)
+	if err != nil {
+		return nil, err
+	}
+	if len(reply) == 0 {
+		return nil, nil
+	}
+	var errResp emailapi.SendEmailErrorResponse
+	if jsonErr := json.Unmarshal(reply, &errResp); jsonErr == nil && errResp.Error != "" {
+		return nil, pkgerrors.NewServiceUnavailable("email-service returned error", errors.New(errResp.Error))
+	}
+	var records []emailapi.EmailRecipientRecord
+	if jsonErr := json.Unmarshal(reply, &records); jsonErr != nil {
+		return nil, pkgerrors.NewUnexpected("malformed email-service group status reply", jsonErr)
+	}
+	out := make([]port.EmailRecipientRecord, 0, len(records))
+	for _, rec := range records {
+		sentAt := rec.SentAt
+		out = append(out, port.EmailRecipientRecord{
+			EmailID:    rec.EmailID,
+			GroupID:    rec.GroupID,
+			To:         rec.To,
+			SentAt:     &sentAt,
+			Delivered:  rec.Delivered,
+			Opened:     rec.Opened,
+			LastOpened: rec.OpenedAt,
+			Failed:     rec.Failed,
+		})
+	}
+	return out, nil
+}
+
 // GetStatusByEmailID fetches per-recipient state from email-service for one
 // previously-dispatched email_id.
 func (d *EmailDispatcher) GetStatusByEmailID(ctx context.Context, emailID string) (*port.EmailRecipientRecord, error) {
