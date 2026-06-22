@@ -368,8 +368,8 @@ func TestSendNewsletterPopulatesEnvelope(t *testing.T) {
 		t.Fatalf("got %d sends, want 2", len(email.sends))
 	}
 	for _, s := range email.sends {
-		if s.From != defaultFromAddress {
-			t.Errorf("send to %s: From=%q, want %q", s.To, s.From, defaultFromAddress)
+		if s.From != DefaultFromAddress {
+			t.Errorf("send to %s: From=%q, want %q", s.To, s.From, DefaultFromAddress)
 		}
 		if s.FromDisplayName != "Test Project Newsletter" {
 			t.Errorf("send to %s: FromDisplayName=%q, want %q", s.To, s.FromDisplayName, "Test Project Newsletter")
@@ -448,8 +448,8 @@ func TestTestSendPopulatesEnvelope(t *testing.T) {
 				t.Fatalf("got %d sends, want 1", len(email.sends))
 			}
 			s := email.sends[0]
-			if s.From != defaultFromAddress {
-				t.Errorf("From=%q, want %q", s.From, defaultFromAddress)
+			if s.From != DefaultFromAddress {
+				t.Errorf("From=%q, want %q", s.From, DefaultFromAddress)
 			}
 			if s.FromDisplayName != "Test Project Newsletter" {
 				t.Errorf("FromDisplayName=%q, want %q", s.FromDisplayName, "Test Project Newsletter")

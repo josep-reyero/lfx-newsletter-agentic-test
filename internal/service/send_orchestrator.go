@@ -24,10 +24,10 @@ import (
 // defaultSendConcurrency caps in-flight email-service requests during fan-out.
 const defaultSendConcurrency = 5
 
-// defaultFromAddress is the SMTP envelope From used when the orchestrator is
+// DefaultFromAddress is the SMTP envelope From used when the orchestrator is
 // constructed without an explicit FromAddress (e.g. tests). Production wiring
 // always sets one through SendOrchestratorConfig.
-const defaultFromAddress = "newsletter@linuxfoundation.org"
+const DefaultFromAddress = "newsletter@linuxfoundation.org"
 
 // fromDisplayNameSuffix is appended to the project name to build the From
 // display name, yielding e.g. "Kubernetes Newsletter".
@@ -61,7 +61,7 @@ type SendOrchestratorConfig struct {
 	// the recipient-resolution path without sending real mail.
 	FanoutEnabled bool
 	// FromAddress is the SMTP envelope From applied to every outbound email.
-	// Empty falls back to defaultFromAddress.
+	// Empty falls back to DefaultFromAddress.
 	FromAddress string
 }
 
@@ -73,7 +73,7 @@ func NewSendOrchestrator(cfg SendOrchestratorConfig) *SendOrchestrator {
 	}
 	from := strings.TrimSpace(cfg.FromAddress)
 	if from == "" {
-		from = defaultFromAddress
+		from = DefaultFromAddress
 	}
 	return &SendOrchestrator{
 		repo:          cfg.Repo,

@@ -13,6 +13,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	newsletterservice "github.com/linuxfoundation/lfx-v2-newsletter-service/internal/service"
 )
 
 // AppConfig holds all runtime configuration read from environment variables.
@@ -76,7 +78,6 @@ const (
 	defaultNATSReconnectWaitSecs = 2
 	defaultNATSURL               = "nats://nats:4222"
 	defaultSendConcurrency       = 5
-	defaultEmailFromAddress      = "newsletter@linuxfoundation.org"
 )
 
 // AppConfigFromEnv reads AppConfig from environment variables, applying defaults
@@ -92,7 +93,7 @@ func AppConfigFromEnv() (AppConfig, error) {
 		NATSReconnectWait: durationOr("NATS_RECONNECT_WAIT", time.Duration(defaultNATSReconnectWaitSecs)*time.Second),
 		SendFanoutEnabled: boolOr("SEND_FANOUT_ENABLED", true),
 		SendConcurrency:   intOr("SEND_CONCURRENCY", defaultSendConcurrency),
-		EmailFromAddress:  envOr("EMAIL_FROM_ADDRESS", defaultEmailFromAddress),
+		EmailFromAddress:  envOr("EMAIL_FROM_ADDRESS", newsletterservice.DefaultFromAddress),
 		UnsubscribeSecret: os.Getenv("NEWSLETTER_UNSUBSCRIBE_SECRET"),
 		PublicBaseURL:     strings.TrimSpace(os.Getenv("NEWSLETTER_PUBLIC_BASE_URL")),
 		JWKSURL:           os.Getenv("JWKS_URL"),
