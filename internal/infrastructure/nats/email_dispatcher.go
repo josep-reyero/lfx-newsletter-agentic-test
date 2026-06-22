@@ -68,8 +68,8 @@ func (d *EmailDispatcher) SendEmail(ctx context.Context, in port.SendEmailInput)
 
 // GetEngagement fetches per-group engagement totals from email-service.
 //
-// Note: email-service does not currently report unique opens — UniqueOpens is
-// populated from the local newsletter_opens table by the analytics service.
+// Note: the scalar engagement summary does not expose DailyOpens or
+// UniqueOpens; AnalyticsService derives those from GetStatusByGroupID.
 func (d *EmailDispatcher) GetEngagement(ctx context.Context, groupID string) (*port.EmailEngagement, error) {
 	if groupID == "" {
 		return nil, pkgerrors.NewValidation("group_id is required")
@@ -104,6 +104,57 @@ func (d *EmailDispatcher) GetEngagement(ctx context.Context, groupID string) (*p
 		Opened:    out.Opened,
 		Failed:    out.Failed,
 	}, nil
+}
+
+// GetStatusByGroupID fetches the per-recipient records for every email
+// dispatched under the given group_id. Email-service's by-group reply is a
+// JSON array of EmailRecipientRecord (one per email_id in the group).
+//
+// Used by AnalyticsService to populate DailyOpens (bucketed by OpenedAt) and
+// UniqueOpens (deduplicated by recipient address) — the scalar engagement
+// summary doesn't expose either.
+func (d *EmailDispatcher) GetStatusByGroupID(ctx context.Context, groupID string) ([]port.EmailRecipientRecord, error) {
+	if groupID == "" {
+		return nil, pkgerrors.NewValidation("group_id is required")
+	}
+	envelope := emailapi.GetEmailStatusRequest{GroupID: groupID}
+	data, err := json.Marshal(envelope)
+	if err != nil {
+		return nil, pkgerrors.NewUnexpected("marshal get_email_status by group request", err)
+	}
+	reply, err := d.client.Request(ctx, EmailServiceGetEmailStatusSubject, data)
+	if err != nil {
+		return nil, err
+	}
+	if len(reply) == 0 {
+		// No records yet — treat as empty rather than an error so analytics
+		// can degrade gracefully on a freshly-sent newsletter where the
+		// group index hasn't propagated.
+		return nil, nil
+	}
+	var errResp emailapi.SendEmailErrorResponse
+	if jsonErr := json.Unmarshal(reply, &errResp); jsonErr == nil && errResp.Error != "" {
+		return nil, pkgerrors.NewServiceUnavailable("email-service returned error", errors.New(errResp.Error))
+	}
+	var out []emailapi.EmailRecipientRecord
+	if jsonErr := json.Unmarshal(reply, &out); jsonErr != nil {
+		return nil, pkgerrors.NewUnexpected("malformed email-service group-status reply", jsonErr)
+	}
+	records := make([]port.EmailRecipientRecord, 0, len(out))
+	for _, r := range out {
+		sentAt := r.SentAt
+		records = append(records, port.EmailRecipientRecord{
+			EmailID:    r.EmailID,
+			GroupID:    r.GroupID,
+			To:         r.To,
+			SentAt:     &sentAt,
+			Delivered:  r.Delivered,
+			Opened:     r.Opened,
+			LastOpened: r.OpenedAt,
+			Failed:     r.Failed,
+		})
+	}
+	return records, nil
 }
 
 // GetStatusByEmailID fetches per-recipient state from email-service for one
