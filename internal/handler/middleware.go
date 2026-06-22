@@ -23,6 +23,8 @@ type userContextKey struct{}
 // is stored after JWT validation. Use UserFromContext to read it.
 var userContextKeyValue = userContextKey{}
 
+var errAudienceMismatch = errors.New("token audience mismatch")
+
 // AuthValidator validates inbound Heimdall-issued JWTs via a JWKS endpoint.
 //
 // A nil receiver represents "auth disabled" mode for local development; callers
@@ -72,7 +74,7 @@ func (a *AuthValidator) validate(tokenStr string) (string, error) {
 	}
 	if a.expectedAudience != "" {
 		if !audienceMatches(claims["aud"], a.expectedAudience) {
-			return "", errors.New("token audience mismatch")
+			return "", errAudienceMismatch
 		}
 	}
 	for _, claim := range []string{"principal", "sub"} {

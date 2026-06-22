@@ -7,6 +7,7 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/rsa"
+	"errors"
 	"testing"
 	"time"
 
@@ -50,7 +51,7 @@ func TestAuthValidatorValidateRejectsWrongAudience(t *testing.T) {
 	if err == nil {
 		t.Fatal("validate token with wrong audience: got nil error")
 	}
-	if err.Error() != "token audience mismatch" {
+	if !errors.Is(err, errAudienceMismatch) {
 		t.Fatalf("validate token with wrong audience error = %v, want audience mismatch", err)
 	}
 }
