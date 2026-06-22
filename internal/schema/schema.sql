@@ -61,13 +61,27 @@ CREATE INDEX IF NOT EXISTS idx_opens_opened_at             ON newsletter_opens (
 
 -- Bound runaway growth on the unauthenticated open-tracking pixel: collapse
 -- repeat hits from the same recipient within the same hour into a single row.
--- opened_at_hour stores the UTC hour bucket so the unique index below can use
--- a plain column (date_trunc is STABLE not IMMUTABLE and cannot appear in an
--- index expression directly).
+-- opened_at_hour stores the UTC hour bucket as epoch-hours so the conflict
+-- target can use a plain immutable column. Avoid date_trunc/AT TIME ZONE here:
+-- generated columns reject STABLE timezone functions.
 ALTER TABLE newsletter_opens
-    ADD COLUMN IF NOT EXISTS opened_at_hour TIMESTAMPTZ
-        GENERATED ALWAYS AS (date_trunc('hour', opened_at AT TIME ZONE 'UTC') AT TIME ZONE 'UTC') STORED;
+    ADD COLUMN IF NOT EXISTS opened_at_hour BIGINT
+        GENERATED ALWAYS AS (floor(EXTRACT(EPOCH FROM opened_at) / 3600)::bigint) STORED;
 
 -- The application is expected to use ON CONFLICT DO NOTHING when inserting.
 CREATE UNIQUE INDEX IF NOT EXISTS uq_opens_newsletter_recipient_hour
     ON newsletter_opens (newsletter_id, recipient_hash, opened_at_hour);
+
+-- PG has no native IF NOT EXISTS on ADD CONSTRAINT; attach the named unique
+-- index as a constraint so RecordOpen's ON CONFLICT ON CONSTRAINT target is
+-- valid.
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint WHERE conname = 'uq_opens_newsletter_recipient_hour'
+    ) THEN
+        ALTER TABLE newsletter_opens
+            ADD CONSTRAINT uq_opens_newsletter_recipient_hour
+            UNIQUE USING INDEX uq_opens_newsletter_recipient_hour;
+    END IF;
+END$$;
