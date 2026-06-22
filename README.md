@@ -36,8 +36,10 @@ Two supported paths for running the service locally:
 - Go 1.25+
 - A running PostgreSQL 16+ instance (Path A) **or** OrbStack/kind with `kubectl`,
   `helm` 3.8+, and [`ko`](https://ko.build) (Path B)
-- A reachable `lfx-v2-query-service` (or a stubbed `COMMITTEE_SERVICE_URL` —
-  the service starts without it being live, but recipient resolution will fail)
+- A reachable NATS (committee resolution and email-service fan-out travel over
+  NATS; `NATS_URL` defaults to `nats://nats:4222`) and `lfx-v2-query-service`
+  for recipient resolution — the service starts without them being live, but
+  recipient resolution and sends will fail
 
 ---
 
@@ -56,7 +58,7 @@ you do **not** need to run any SQL files manually.
 
 ```bash
 export DATABASE_URL='postgres://<your-user>@localhost:5432/newsletters?sslmode=disable'
-export COMMITTEE_SERVICE_URL='http://localhost:8081'   # lfx-v2-query-service / API gateway
+export NATS_URL='nats://localhost:4222'                # committee resolution + email-service fan-out
 export REQUIRE_USER_AUTH=false                         # local only — production must verify JWTs
 export LOG_LEVEL=debug
 ```
@@ -84,9 +86,10 @@ curl -s http://localhost:8080/livez && echo
 # → ok
 ```
 
-If you see `missing required env vars: DATABASE_URL, COMMITTEE_SERVICE_URL`,
-the env vars above are not set in the shell you ran `make run` from — `make`
-does **not** load your shell rc.
+If you see `missing required env vars: DATABASE_URL` (plus
+`NEWSLETTER_UNSUBSCRIBE_SECRET` / `NEWSLETTER_PUBLIC_BASE_URL` when
+`SEND_FANOUT_ENABLED=true`, the default), those vars are not set in the shell you
+ran `make run` from — `make` does **not** load your shell rc.
 
 ---
 

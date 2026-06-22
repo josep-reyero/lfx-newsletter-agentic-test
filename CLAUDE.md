@@ -5,14 +5,18 @@
 The LFX V2 Newsletter Service is a Go microservice in the LFX v2 platform. It owns:
 
 - **Persistence** of newsletter drafts and send history in PostgreSQL (CloudNativePG-backed).
-- **Recipient resolution** via HTTP calls to the LFX v2 query service.
+- **Recipient resolution** from committees (via NATS) and the LFX v2 query service.
 - **State transitions** for drafts (draft → sent).
+- **Email dispatch**: `/newsletters/test-send` and `/newsletters/drafts/{id}/send`
+  resolve recipients, render the email chrome, and fan out a per-recipient
+  `send_email` request to `lfx-v2-email-service` over NATS; `/send` then flips the
+  draft to `status=sent` after dispatch.
 
-> **Out of scope right now:** actual email delivery. `/newsletters/test-send`
-> and `/newsletters/drafts/{id}/send` validate input and mark the persisted
-> draft as sent — but do not dispatch any email. Wiring up a real email
-> publisher (e.g. publishing to `lfx-v2-email-service` over NATS) is a
-> planned follow-up.
+> **Email delivery is in scope.** `/newsletters/test-send` and
+> `/newsletters/drafts/{id}/send` dispatch real email via `lfx-v2-email-service`
+> over NATS (threading a configurable envelope From address, a project-derived
+> From display name, and the Executive Director Reply-To). Fan-out is gated by
+> `SEND_FANOUT_ENABLED` (default true).
 >
 > AI content generation continues to live in `lfx-v2-ui`; this service does
 > not proxy AI calls.
@@ -44,7 +48,7 @@ internal/domain/
 
 internal/service/
 ├── newsletter.go             # CRUD + validation + state transitions
-└── send_orchestrator.go      # Resolve recipients, mark draft sent (no email dispatch)
+└── send_orchestrator.go      # Resolve recipients, fan out via email-service, mark sent
 
 internal/repository/
 └── postgres.go               # bun-backed NewsletterRepository with optimistic locking
