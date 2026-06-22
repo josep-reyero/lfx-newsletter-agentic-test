@@ -58,6 +58,17 @@ export REQUIRE_USER_AUTH=false                         # local only — producti
 export LOG_LEVEL=debug
 ```
 
+Real email dispatch (`SEND_FANOUT_ENABLED=true`) is **off by default** so the
+binary and the chart start with no extra wiring. To exercise the full
+send/unsubscribe path locally, enable fanout and supply the HMAC secret and
+public base URL the per-recipient unsubscribe link is built from:
+
+```bash
+export SEND_FANOUT_ENABLED=true
+export NEWSLETTER_UNSUBSCRIBE_SECRET='dev-only-hmac-key'   # any non-empty value locally
+export NEWSLETTER_PUBLIC_BASE_URL='http://localhost:8080'  # origin used to build unsubscribe links
+```
+
 `sslmode=disable` is required for a vanilla Homebrew Postgres install, which
 ships without TLS; pgx defaults to requiring SSL.
 

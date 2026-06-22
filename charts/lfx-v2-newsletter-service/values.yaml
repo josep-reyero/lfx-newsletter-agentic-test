@@ -63,7 +63,12 @@ app:
     # validates inputs and resolves recipients but does NOT call the
     # email-service NATS subject — useful for dev/staging shake-out of the
     # recipient-resolution path without sending real mail.
-    fanoutEnabled: true
+    #
+    # Defaults to false so the chart renders with its own defaults (a bare
+    # `helm template` / local install) without requiring the production HMAC
+    # secret wiring. Real deployments enable fanout in their environment values
+    # and MUST also provide app.unsubscribe.secretRef there.
+    fanoutEnabled: false
     # concurrency caps in-flight email-service requests during fan-out.
     # Empty string falls back to the app default (5).
     concurrency: ""

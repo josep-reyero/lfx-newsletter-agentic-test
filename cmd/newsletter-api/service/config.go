@@ -82,7 +82,7 @@ func AppConfigFromEnv() (AppConfig, error) {
 		NATSTimeout:       durationOr("NATS_TIMEOUT", defaultNATSTimeout),
 		NATSMaxReconnect:  intOr("NATS_MAX_RECONNECT", -1),
 		NATSReconnectWait: durationOr("NATS_RECONNECT_WAIT", time.Duration(defaultNATSReconnectWaitSecs)*time.Second),
-		SendFanoutEnabled: boolOr("SEND_FANOUT_ENABLED", true),
+		SendFanoutEnabled: boolOr("SEND_FANOUT_ENABLED", false),
 		SendConcurrency:   intOr("SEND_CONCURRENCY", defaultSendConcurrency),
 		UnsubscribeSecret: os.Getenv("NEWSLETTER_UNSUBSCRIBE_SECRET"),
 		PublicBaseURL:     strings.TrimSpace(os.Getenv("NEWSLETTER_PUBLIC_BASE_URL")),
