@@ -40,9 +40,23 @@ spec:
     - ports:
         - port: {{ .Values.networkPolicy.postgresPort }}
           protocol: TCP
-    # Upstream HTTP services (committee, project) and JWKS endpoint over HTTPS.
-    # Wide-open HTTPS is acceptable for this PoC; tighten with namespace selectors
-    # once API gateway topology stabilizes.
+    # NATS request/reply — upstream calls to committee-service, project-service,
+    # and email-service. This is the primary service-to-service transport.
+    {{- if .Values.networkPolicy.natsNamespace }}
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Values.networkPolicy.natsNamespace | quote }}
+      ports:
+        - port: {{ .Values.networkPolicy.natsPort }}
+          protocol: TCP
+    {{- else }}
+    - ports:
+        - port: {{ .Values.networkPolicy.natsPort }}
+          protocol: TCP
+    {{- end }}
+    # External HTTP/HTTPS — JWKS endpoint for OIDC verification and any
+    # third-party upstream. Service-to-service calls go via NATS, not HTTP.
     - ports:
         - port: 80
           protocol: TCP
