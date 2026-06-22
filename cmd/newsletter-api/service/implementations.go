@@ -117,6 +117,8 @@ func InitInfrastructure(ctx context.Context, cfg AppConfig) error {
 		DB:              sqlDB,
 		Auth:            authImpl,
 		RequireUserAuth: cfg.RequireUserAuth,
+		// NATS is required at runtime; surface its readiness to /readyz.
+		NATSReady: nc.IsReady,
 	})
 	httpHandler = handlerImpl.Routes()
 

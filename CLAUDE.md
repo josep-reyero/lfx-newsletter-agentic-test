@@ -38,13 +38,15 @@ cmd/newsletter-api/
     └── implementations.go    # Wires infrastructure into service structs
 
 internal/domain/
-├── model/                    # Pure data: Newsletter, Status, ContextType, CommitteeMember
-├── port/                     # Interfaces: NewsletterRepository, CommitteeClient
-└── errors.go                 # Sentinel errors: ErrNotFound, ErrVersionMismatch, ErrInvalidRequest, ErrAlreadySent
+├── model/                    # Pure data: Newsletter (project-scoped), Status, CommitteeMember
+├── port/                     # Interfaces: NewsletterRepository, CommitteeClient, ProjectMetadataClient, EmailDispatcher
+└── errors.go                 # Sentinel errors: ErrNotFound, ErrVersionMismatch, ErrInvalidRequest, ErrAlreadySent, ErrForbidden
 
 internal/service/
 ├── newsletter.go             # CRUD + validation + state transitions
-└── send_orchestrator.go      # Resolve recipients, mark draft sent (no email dispatch)
+└── send_orchestrator.go      # Project-scoped recipient resolution, per-recipient
+                              # email fan-out over NATS, open-pixel injection,
+                              # durable send-intent + draft → sent transition
 
 internal/repository/
 └── postgres.go               # bun-backed NewsletterRepository with optimistic locking
@@ -64,9 +66,12 @@ internal/infrastructure/
 ├── observability/
 │   ├── log.go                # slog + OTel handler init
 │   └── otel.go               # OTel SDK bootstrap
-└── upstream/
-    ├── committee_client.go   # HTTP client for committee/query service
-    └── http_helpers.go       # bearer token context, JSON parser
+└── nats/                     # NATS request/reply clients to sibling services
+    ├── client.go             # Shared NATS connection + IsReady (used by /readyz)
+    ├── committee_client.go   # list_members + get_project (recipient resolution)
+    ├── project_client.go     # get_name / get_slug (email chrome)
+    ├── email_dispatcher.go   # send_email + engagement analytics
+    └── subjects.go           # Upstream NATS subject constants
 
 pkg/api/
 └── newsletter.go             # Public contract: request/response DTOs
@@ -96,7 +101,7 @@ All `os.Getenv` calls belong in `cmd/newsletter-api/service/config.go` →
 4. Register the route in `internal/handler/http.go`.
 
 ### Error handling
-- Domain errors live in `internal/domain/errors.go` (`ErrNotFound`, `ErrVersionMismatch`, `ErrInvalidRequest`, `ErrAlreadySent`).
+- Domain errors live in `internal/domain/errors.go` (`ErrNotFound`, `ErrVersionMismatch`, `ErrInvalidRequest`, `ErrAlreadySent`, `ErrForbidden`).
 - Map domain errors to HTTP status codes in `internal/handler/http.go`.
 - Always pass `ctx` for OTel trace correlation.
 
@@ -120,7 +125,9 @@ Every `.go` file must start with:
 
 ## Related Services
 
-| Service                    | Relationship                                                      |
-| -------------------------- | ----------------------------------------------------------------- |
-| `lfx-v2-query-service`     | Source of committee member emails (via `/query/resources` HTTP)   |
-| `lfx-v2-ui` Express server | HTTP client; proxies UI requests to this service                  |
+| Service                     | Relationship                                                                 |
+| --------------------------- | ---------------------------------------------------------------------------- |
+| `lfx-v2-committee-service`  | Recipient resolution over NATS (`list_members`, `get_project` for scoping)   |
+| `lfx-v2-project-service`    | Project name/slug for email chrome over NATS (`get_name`, `get_slug`)        |
+| `lfx-v2-email-service`      | Per-recipient email dispatch and engagement analytics over NATS              |
+| Authoring UI                | HTTP client; proxies project-scoped UI requests to this service              |

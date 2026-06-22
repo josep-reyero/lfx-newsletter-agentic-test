@@ -28,6 +28,7 @@ type Handler struct {
 	db              *sql.DB
 	auth            *AuthValidator
 	requireUserAuth bool
+	natsReady       func() error
 }
 
 // Config wires a Handler.
@@ -38,6 +39,11 @@ type Config struct {
 	DB              *sql.DB
 	Auth            *AuthValidator
 	RequireUserAuth bool
+	// NATSReady reports whether the shared NATS client is connected. NATS is a
+	// required runtime dependency (recipient resolution, project metadata, email
+	// dispatch, analytics), so /readyz fails when it is unreachable. Optional —
+	// nil skips the NATS check (e.g. tests or NATS-less local runs).
+	NATSReady func() error
 }
 
 // New wires a Handler with the given dependencies.
@@ -49,6 +55,7 @@ func New(cfg Config) *Handler {
 		db:              cfg.DB,
 		auth:            cfg.Auth,
 		requireUserAuth: cfg.RequireUserAuth,
+		natsReady:       cfg.NATSReady,
 	}
 }
 
@@ -141,7 +148,14 @@ func classifyError(err error) (int, string) {
 	if status, code, ok := classifyAuthError(err); ok {
 		return status, code
 	}
-	var svcUnavailable pkgerrors.ServiceUnavailable
+	// Typed pkg/errors surfaced by the NATS upstream clients (committee, project,
+	// email). These are caller-facing and must map to a proper status, not 500.
+	var (
+		svcUnavailable pkgerrors.ServiceUnavailable
+		notFound       pkgerrors.NotFound
+		validation     pkgerrors.Validation
+		conflict       pkgerrors.Conflict
+	)
 	switch {
 	case errors.Is(err, domain.ErrNotFound):
 		return http.StatusNotFound, "not_found"
@@ -155,6 +169,12 @@ func classifyError(err error) (int, string) {
 		return http.StatusBadRequest, "invalid_request"
 	case errors.As(err, &svcUnavailable):
 		return http.StatusServiceUnavailable, "service_unavailable"
+	case errors.As(err, &notFound):
+		return http.StatusNotFound, "not_found"
+	case errors.As(err, &validation):
+		return http.StatusBadRequest, "invalid_request"
+	case errors.As(err, &conflict):
+		return http.StatusConflict, "conflict"
 	default:
 		return http.StatusInternalServerError, "internal_error"
 	}

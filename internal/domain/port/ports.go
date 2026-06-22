@@ -45,13 +45,16 @@ type NewsletterRepository interface {
 	Update(ctx context.Context, n *model.Newsletter, expectedVersion int64) (*model.Newsletter, error)
 	Delete(ctx context.Context, id uuid.UUID) error
 
-	// PersistSendIntent durably records the minted group_id on a draft *before*
-	// fan-out begins, without leaving the draft state. This makes the send
-	// idempotent: if the process dies mid-send or every delivery fails, a retry
-	// reuses the same group_id rather than minting a new one and re-sending
-	// under a fresh correlation key. No-op if the draft already carries a
-	// group_id (returns the existing one).
-	PersistSendIntent(ctx context.Context, id uuid.UUID, groupID string, expectedVersion int64) (string, error)
+	// PersistSendIntent atomically claims a draft for sending: it durably records
+	// the group_id and bumps the version in one conditional update *before*
+	// fan-out begins, while keeping status=draft. This makes the send durable and
+	// idempotent under concurrency — a crash or fully-failed attempt leaves the
+	// group_id to retry under, and a concurrent send holding the pre-claim version
+	// loses the optimistic-lock race instead of dispatching a duplicate batch. It
+	// returns the durable group_id and the post-claim version to pass to MarkSent.
+	// A draft already carrying a group_id (a prior unfinished attempt) returns that
+	// group and its current version for reuse.
+	PersistSendIntent(ctx context.Context, id uuid.UUID, groupID string, expectedVersion int64) (groupID2 string, claimedVersion int64, err error)
 
 	MarkSent(ctx context.Context, id uuid.UUID, sentAt time.Time, totalRecipients int, groupID string, expectedVersion int64) (*model.Newsletter, error)
 

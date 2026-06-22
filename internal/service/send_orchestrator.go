@@ -142,12 +142,13 @@ func (o *SendOrchestrator) SendNewsletter(ctx context.Context, in SendNewsletter
 	htmlBody := render.EmailHTML(chrome)
 	textBody := render.EmailText(chrome)
 
-	// Durably record the send intent (group_id) before any email goes out. This
-	// makes the send idempotent across retries: a crash mid-fan-out or a fully
-	// failed attempt leaves the group_id persisted so the next attempt reuses
-	// the same correlation key instead of re-sending under a fresh one. The draft
-	// stays in `draft` (version unchanged) until MarkSent finalizes it below.
-	groupID, err := o.repo.PersistSendIntent(ctx, draft.ID, uuid.NewString(), draft.Version)
+	// Atomically claim the send before any email goes out: PersistSendIntent
+	// durably records the group_id and bumps the version in one update. This makes
+	// the send durable (group_id survives a crash/full-failure for retry) and
+	// idempotent under concurrency (a second concurrent send loses the claim race
+	// rather than dispatching a duplicate batch). The row stays a draft until
+	// MarkSent finalizes it below, which must use the post-claim version.
+	groupID, claimedVersion, err := o.repo.PersistSendIntent(ctx, draft.ID, uuid.NewString(), draft.Version)
 	if err != nil {
 		return nil, fmt.Errorf("persist send intent: %w", err)
 	}
@@ -178,7 +179,7 @@ func (o *SendOrchestrator) SendNewsletter(ctx context.Context, in SendNewsletter
 		return nil, fmt.Errorf("send failed: 0 of %d recipients delivered", len(recipients))
 	}
 
-	updated, markErr := o.repo.MarkSent(ctx, draft.ID, time.Now().UTC(), len(recipients), groupID, draft.Version)
+	updated, markErr := o.repo.MarkSent(ctx, draft.ID, time.Now().UTC(), len(recipients), groupID, claimedVersion)
 	if markErr != nil {
 		return nil, fmt.Errorf("mark sent: %w", markErr)
 	}

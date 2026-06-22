@@ -186,54 +186,71 @@ func (r *PostgresNewsletterRepo) Delete(ctx context.Context, id uuid.UUID) error
 	return nil
 }
 
-// PersistSendIntent durably records group_id on a draft before fan-out so a
-// crashed or fully-failed send can be retried under the same correlation key
-// instead of minting a new group and re-sending blindly. The draft stays in
-// status=draft and its version is unchanged, so the subsequent MarkSent still
-// matches on the caller's expected version. If the draft already carries a
-// group_id (a prior attempt), that existing value is returned and reused.
-func (r *PostgresNewsletterRepo) PersistSendIntent(ctx context.Context, id uuid.UUID, groupID string, expectedVersion int64) (string, error) {
+// PersistSendIntent atomically CLAIMS a draft for sending: it durably records
+// group_id and bumps the version in a single conditional update before any email
+// goes out. This makes the send both durable and idempotent under concurrency:
+//
+//   - durable: group_id is persisted before fan-out, so a crash or fully-failed
+//     attempt leaves the correlation key behind to retry under.
+//   - idempotent: bumping the version claims the row. A second concurrent send
+//     still holding the pre-claim version fails the optimistic lock here (or at
+//     MarkSent) instead of fanning out a duplicate batch under a fresh group.
+//
+// The row stays in status=draft (so it remains retryable until MarkSent
+// finalizes it), but its version advances. The method returns the durable
+// group_id and the post-claim version the caller must pass to MarkSent. If the
+// draft already carries a group_id (a prior attempt that didn't finalize), that
+// existing group and the current version are returned so the retry reuses them.
+func (r *PostgresNewsletterRepo) PersistSendIntent(ctx context.Context, id uuid.UUID, groupID string, expectedVersion int64) (string, int64, error) {
 	existing := &model.Newsletter{}
 	if err := r.db.NewSelect().
 		Model(existing).
 		Where("id = ?", id).
 		Scan(ctx); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return "", domain.ErrNotFound
+			return "", 0, domain.ErrNotFound
 		}
-		return "", fmt.Errorf("persist send intent: load: %w", err)
+		return "", 0, fmt.Errorf("persist send intent: load: %w", err)
 	}
 	if existing.Status == model.StatusSent {
-		return "", domain.ErrAlreadySent
+		return "", 0, domain.ErrAlreadySent
 	}
 	if existing.Version != expectedVersion {
-		return "", domain.ErrVersionMismatch
+		return "", 0, domain.ErrVersionMismatch
 	}
+	// Prior unfinished attempt: reuse its group and current version (the claim
+	// already advanced the version on that attempt).
 	if existing.GroupID != nil && *existing.GroupID != "" {
-		return *existing.GroupID, nil
+		return *existing.GroupID, existing.Version, nil
 	}
-	// Record the intent without bumping version or changing status. Guard on the
-	// version so a concurrent writer can't slip in between the load and update.
+	// Claim the send: set group_id and bump version, guarded on the version and a
+	// still-null group_id so a concurrent claimant loses the race deterministically.
+	claimed := &model.Newsletter{}
 	res, err := r.db.NewUpdate().
-		Model((*model.Newsletter)(nil)).
-		Table("newsletters").
+		Model(claimed).
 		Set("group_id = ?", groupID).
+		Set("version = version + 1").
+		Set("updated_at = now()").
 		Where("id = ? AND version = ? AND status = ? AND group_id IS NULL", id, expectedVersion, model.StatusDraft).
+		Returning("*").
 		Exec(ctx)
 	if err != nil {
-		return "", fmt.Errorf("persist send intent: %w", err)
+		return "", 0, fmt.Errorf("persist send intent: %w", err)
 	}
 	if n, _ := res.RowsAffected(); n == 0 {
-		// Lost a race: re-read and return whatever group is now durable.
+		// Lost the claim race: re-read and reuse whatever is now durable.
 		if err := r.db.NewSelect().Model(existing).Where("id = ?", id).Scan(ctx); err != nil {
-			return "", fmt.Errorf("persist send intent: reload: %w", err)
+			return "", 0, fmt.Errorf("persist send intent: reload: %w", err)
+		}
+		if existing.Status == model.StatusSent {
+			return "", 0, domain.ErrAlreadySent
 		}
 		if existing.GroupID != nil && *existing.GroupID != "" {
-			return *existing.GroupID, nil
+			return *existing.GroupID, existing.Version, nil
 		}
-		return "", domain.ErrVersionMismatch
+		return "", 0, domain.ErrVersionMismatch
 	}
-	return groupID, nil
+	return groupID, claimed.Version, nil
 }
 
 // MarkSent transitions a draft to status=sent atomically, gated on the expected
