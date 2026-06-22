@@ -64,12 +64,20 @@ type SendDraftInput struct {
 // SendDraft loads a draft, resolves the recipient list, and marks the draft as
 // sent — persisting the email-service group_id supplied by the caller. Email
 // dispatch itself happens in lfx-v2-ui's Express layer (one send_email per
-// recipient against lfx-v2-email-service); this method is now a pure state
-// transition.
+// recipient against lfx-v2-email-service). The draft is only flipped to
+// status=sent when at least one recipient resolves, so a send that could not
+// have reached anyone leaves the draft actionable instead of recording a
+// phantom send keyed by an unverifiable correlation id.
 func (o *SendOrchestrator) SendDraft(ctx context.Context, in SendDraftInput) (*model.Newsletter, error) {
-	if strings.TrimSpace(in.GroupID) == "" {
+	rawGroupID := strings.TrimSpace(in.GroupID)
+	if rawGroupID == "" {
 		return nil, fmt.Errorf("%w: groupId is required", domain.ErrInvalidRequest)
 	}
+	parsedGroupID, err := uuid.Parse(rawGroupID)
+	if err != nil {
+		return nil, fmt.Errorf("%w: groupId is not a valid UUID: %v", domain.ErrInvalidRequest, err)
+	}
+	groupID := parsedGroupID.String()
 
 	draft, err := o.repo.Get(ctx, in.DraftID)
 	if err != nil {
@@ -87,14 +95,25 @@ func (o *SendOrchestrator) SendDraft(ctx context.Context, in SendDraftInput) (*m
 		return nil, fmt.Errorf("resolve recipients: %w", err)
 	}
 
-	updated, markErr := o.repo.MarkSent(ctx, draft.ID, time.Now().UTC(), len(recipients), in.GroupID, draft.Version)
+	// Guard against persisting status=sent for a send that could not have
+	// reached anyone. lfx-v2-ui fans out one email-service send per resolved
+	// recipient against this same committee set, so an empty recipient list
+	// means zero per-recipient sends were possible and the supplied groupId
+	// cannot correlate to any email-service engagement record. Refuse to mark
+	// the draft sent and leave it actionable rather than recording a phantom
+	// send keyed by an unverifiable correlation id.
+	if len(recipients) == 0 {
+		return nil, fmt.Errorf("%w: no resolvable recipients; refusing to mark draft sent", domain.ErrInvalidRequest)
+	}
+
+	updated, markErr := o.repo.MarkSent(ctx, draft.ID, time.Now().UTC(), len(recipients), groupID, draft.Version)
 	if markErr != nil {
 		return nil, fmt.Errorf("mark sent: %w", markErr)
 	}
 
 	slog.InfoContext(ctx, "draft marked sent",
 		"draft_id", draft.ID,
-		"group_id", in.GroupID,
+		"group_id", groupID,
 		"total_recipients", len(recipients),
 	)
 
