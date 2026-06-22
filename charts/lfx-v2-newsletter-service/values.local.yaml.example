@@ -13,7 +13,8 @@ replicaCount: 1
 
 app:
   logLevel: debug
-  committeeServiceURL: "http://lfx-api.lfx.svc.cluster.local"
+  nats:
+    url: "nats://nats.lfx.svc.cluster.local:4222"
   requireUserAuth: false   # local dev only; production must validate JWTs
   jwksURL: ""
 

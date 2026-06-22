@@ -6,8 +6,7 @@ the draft → sent state transition.
 ## Responsibilities
 
 - Persist newsletter drafts and sent history (CloudNativePG-backed Postgres).
-- Resolve recipient lists from committees (read-only HTTP calls to the LFX v2
-  query service).
+- Resolve recipient lists from committees over NATS request/reply.
 - Expose an HTTP REST API consumed by the lfx-v2-ui Express server.
 - Dispatch newsletter email per recipient to `lfx-v2-email-service` over NATS,
   threading a configurable envelope From address, a project-derived From display
@@ -37,9 +36,8 @@ Two supported paths for running the service locally:
 - A running PostgreSQL 16+ instance (Path A) **or** OrbStack/kind with `kubectl`,
   `helm` 3.8+, and [`ko`](https://ko.build) (Path B)
 - A reachable NATS (committee resolution and email-service fan-out travel over
-  NATS; `NATS_URL` defaults to `nats://nats:4222`) and `lfx-v2-query-service`
-  for recipient resolution — the service starts without them being live, but
-  recipient resolution and sends will fail
+  NATS; `NATS_URL` defaults to `nats://nats:4222`) — the service starts without
+  it being live, but recipient resolution and sends will fail
 
 ---
 
@@ -60,6 +58,8 @@ you do **not** need to run any SQL files manually.
 export DATABASE_URL='postgres://<your-user>@localhost:5432/newsletters?sslmode=disable'
 export NATS_URL='nats://localhost:4222'                # committee resolution + email-service fan-out
 export REQUIRE_USER_AUTH=false                         # local only — production must verify JWTs
+export NEWSLETTER_PUBLIC_BASE_URL='http://localhost:8080'
+export NEWSLETTER_UNSUBSCRIBE_SECRET='local-dev-change-me'
 export LOG_LEVEL=debug
 ```
 
@@ -125,8 +125,8 @@ cp charts/lfx-v2-newsletter-service/values.local.yaml.example \
 
 The example file pins the chart to `database.mode=cluster+database`, points
 `image.repository` at `ko.local/newsletter-api`, disables `requireUserAuth`,
-and disables the NetworkPolicy for easier debugging. Adjust
-`app.committeeServiceURL` to point at your local query-service if needed.
+and disables the NetworkPolicy for easier debugging. Adjust `app.nats.url` if
+your local NATS service is not reachable at the example value.
 
 **4. Install the chart.**
 
@@ -237,7 +237,7 @@ internal/handler/
 
 internal/infrastructure/
 ├── observability/            # OTel SDK + slog handler
-└── upstream/                 # HTTP client for committee/query service
+└── nats/                     # NATS clients for committee, project, email-service
 
 pkg/api/
 └── newsletter.go             # public DTOs (mirror lfx-v2-ui shared interfaces)
@@ -297,5 +297,6 @@ column atomically incremented on each `UPDATE`. `GET` returns
 
 | Service                          | Relationship                                                  |
 | -------------------------------- | ------------------------------------------------------------- |
-| `lfx-v2-query-service`           | Source of committee member emails (via `/query/resources`)    |
+| `lfx-v2-committee-service`       | Source of committee members via NATS request/reply             |
+| `lfx-v2-email-service`           | Sends rendered newsletter email via NATS `send_email`          |
 | `lfx-v2-ui` (Express server)     | HTTP client; proxies UI requests to this service               |

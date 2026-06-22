@@ -5,7 +5,7 @@
 The LFX V2 Newsletter Service is a Go microservice in the LFX v2 platform. It owns:
 
 - **Persistence** of newsletter drafts and send history in PostgreSQL (CloudNativePG-backed).
-- **Recipient resolution** from committees (via NATS) and the LFX v2 query service.
+- **Recipient resolution** from committees over NATS request/reply.
 - **State transitions** for drafts (draft → sent).
 - **Email dispatch**: `/newsletters/test-send` and `/newsletters/drafts/{id}/send`
   resolve recipients, render the email chrome, and fan out a per-recipient
@@ -68,9 +68,10 @@ internal/infrastructure/
 ├── observability/
 │   ├── log.go                # slog + OTel handler init
 │   └── otel.go               # OTel SDK bootstrap
-└── upstream/
-    ├── committee_client.go   # HTTP client for committee/query service
-    └── http_helpers.go       # bearer token context, JSON parser
+└── nats/
+    ├── committee_client.go   # NATS client for committee member lookup
+    ├── email_dispatcher.go   # NATS client for email-service send/analytics
+    └── project_client.go     # NATS client for project metadata
 
 pkg/api/
 └── newsletter.go             # Public contract: request/response DTOs
@@ -126,5 +127,6 @@ Every `.go` file must start with:
 
 | Service                    | Relationship                                                      |
 | -------------------------- | ----------------------------------------------------------------- |
-| `lfx-v2-query-service`     | Source of committee member emails (via `/query/resources` HTTP)   |
+| `lfx-v2-committee-service` | Source of committee members via NATS request/reply                 |
+| `lfx-v2-email-service`     | Sends rendered newsletter email via NATS `send_email`              |
 | `lfx-v2-ui` Express server | HTTP client; proxies UI requests to this service                  |
