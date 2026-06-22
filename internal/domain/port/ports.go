@@ -49,11 +49,12 @@ type NewsletterRepository interface {
 	// the group_id and bumps the version in one conditional update *before*
 	// fan-out begins, while keeping status=draft. This makes the send durable and
 	// idempotent under concurrency — a crash or fully-failed attempt leaves the
-	// group_id to retry under, and a concurrent send holding the pre-claim version
-	// loses the optimistic-lock race instead of dispatching a duplicate batch. It
-	// returns the durable group_id and the post-claim version to pass to MarkSent.
-	// A draft already carrying a group_id (a prior unfinished attempt) returns that
-	// group and its current version for reuse.
+	// group_id to retry under, normal update/delete paths reject that claimed row,
+	// and a concurrent send holding the pre-claim version loses the optimistic-lock
+	// race instead of dispatching a duplicate batch. It returns the durable group_id
+	// and the post-claim version to pass to MarkSent. A draft already carrying a
+	// group_id (a prior unfinished attempt) returns that group and its current
+	// version for reuse.
 	PersistSendIntent(ctx context.Context, id uuid.UUID, groupID string, expectedVersion int64) (groupID2 string, claimedVersion int64, err error)
 
 	MarkSent(ctx context.Context, id uuid.UUID, sentAt time.Time, totalRecipients int, groupID string, expectedVersion int64) (*model.Newsletter, error)

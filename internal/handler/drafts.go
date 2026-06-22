@@ -153,6 +153,10 @@ func parseUUID(raw string) (uuid.UUID, error) {
 
 // toAPINewsletter converts a domain model into the public API DTO.
 func toAPINewsletter(n *model.Newsletter) *publicapi.Newsletter {
+	var groupID *string
+	if n.Status == model.StatusSent {
+		groupID = n.GroupID
+	}
 	return &publicapi.Newsletter{
 		ID:              n.ID.String(),
 		ProjectUID:      n.ProjectUID,
@@ -162,7 +166,7 @@ func toAPINewsletter(n *model.Newsletter) *publicapi.Newsletter {
 		CommitteeUIDs:   n.CommitteeUIDs,
 		Status:          publicapi.Status(n.Status),
 		SentAt:          n.SentAt,
-		GroupID:         n.GroupID,
+		GroupID:         groupID,
 		TotalRecipients: n.TotalRecipients,
 		CreatedBy:       n.CreatedBy,
 		Version:         n.Version,

@@ -163,6 +163,8 @@ func classifyError(err error) (int, string) {
 		return http.StatusPreconditionFailed, "version_mismatch"
 	case errors.Is(err, domain.ErrAlreadySent):
 		return http.StatusConflict, "already_sent"
+	case errors.Is(err, domain.ErrSendInProgress):
+		return http.StatusConflict, "send_in_progress"
 	case errors.Is(err, domain.ErrForbidden):
 		return http.StatusForbidden, "forbidden"
 	case errors.Is(err, domain.ErrInvalidRequest):

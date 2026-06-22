@@ -133,9 +133,10 @@ func (r *PostgresNewsletterRepo) ListAll(ctx context.Context, filters port.ListF
 }
 
 // Update applies optimistic-locking-aware mutations. The query gates on
-// (id, expectedVersion) and atomically increments version. If no rows are
-// affected, the method follows up with an existence check to disambiguate
-// ErrNotFound vs ErrVersionMismatch.
+// (id, expectedVersion), draft status, and a null group_id, then atomically
+// increments version. A non-null group_id means the send orchestrator has
+// claimed the draft; updates are rejected so an in-flight send cannot be
+// retargeted after group_id is already durable.
 func (r *PostgresNewsletterRepo) Update(ctx context.Context, n *model.Newsletter, expectedVersion int64) (*model.Newsletter, error) {
 	res, err := r.db.NewUpdate().
 		Model(n).
@@ -148,7 +149,7 @@ func (r *PostgresNewsletterRepo) Update(ctx context.Context, n *model.Newsletter
 		Set("project_uid = ?", n.ProjectUID).
 		Set("updated_at = now()").
 		Set("version = version + 1").
-		Where("id = ? AND version = ?", n.ID, expectedVersion).
+		Where("id = ? AND version = ? AND status = ? AND group_id IS NULL", n.ID, expectedVersion, model.StatusDraft).
 		Returning("*").
 		Exec(ctx)
 	if err != nil {
@@ -160,18 +161,19 @@ func (r *PostgresNewsletterRepo) Update(ctx context.Context, n *model.Newsletter
 		return nil, fmt.Errorf("update newsletter rows affected: %w", err)
 	}
 	if rowsAffected == 0 {
-		return nil, r.classifyMissing(ctx, n.ID)
+		return nil, r.classifyDraftMutationMiss(ctx, n.ID)
 	}
 
 	// bun's Returning("*") populated n with the new row state.
 	return n, nil
 }
 
-// Delete removes a newsletter by id. Returns ErrNotFound if no row was deleted.
+// Delete removes an unclaimed draft by id. A draft with group_id is in-flight
+// and must not be deleted while the send orchestrator may still finalize it.
 func (r *PostgresNewsletterRepo) Delete(ctx context.Context, id uuid.UUID) error {
 	res, err := r.db.NewDelete().
 		Model((*model.Newsletter)(nil)).
-		Where("id = ?", id).
+		Where("id = ? AND status = ? AND group_id IS NULL", id, model.StatusDraft).
 		Exec(ctx)
 	if err != nil {
 		return fmt.Errorf("delete newsletter: %w", err)
@@ -181,7 +183,7 @@ func (r *PostgresNewsletterRepo) Delete(ctx context.Context, id uuid.UUID) error
 		return fmt.Errorf("delete newsletter rows affected: %w", err)
 	}
 	if n == 0 {
-		return domain.ErrNotFound
+		return r.classifyDraftMutationMiss(ctx, id)
 	}
 	return nil
 }
@@ -196,9 +198,10 @@ func (r *PostgresNewsletterRepo) Delete(ctx context.Context, id uuid.UUID) error
 //     still holding the pre-claim version fails the optimistic lock here (or at
 //     MarkSent) instead of fanning out a duplicate batch under a fresh group.
 //
-// The row stays in status=draft (so it remains retryable until MarkSent
-// finalizes it), but its version advances. The method returns the durable
-// group_id and the post-claim version the caller must pass to MarkSent.
+// The row stays in status=draft so it remains retryable until MarkSent finalizes
+// it, but the non-null group_id makes the draft immutable to normal update/delete
+// paths. The method returns the durable group_id and the post-claim version the
+// caller must pass to MarkSent.
 //
 // Reuse vs. concurrency: a group_id is only reused when the caller's
 // expectedVersion still matches the row's CURRENT version — i.e. the *same*
@@ -393,18 +396,25 @@ func (r *PostgresNewsletterRepo) Analytics(ctx context.Context, newsletterID uui
 	}, nil
 }
 
-// classifyMissing distinguishes ErrNotFound from ErrVersionMismatch after an
-// Update affected zero rows.
-func (r *PostgresNewsletterRepo) classifyMissing(ctx context.Context, id uuid.UUID) error {
-	exists, err := r.db.NewSelect().
-		Model((*model.Newsletter)(nil)).
+// classifyDraftMutationMiss distinguishes why a draft update/delete affected
+// zero rows.
+func (r *PostgresNewsletterRepo) classifyDraftMutationMiss(ctx context.Context, id uuid.UUID) error {
+	existing := &model.Newsletter{}
+	err := r.db.NewSelect().
+		Model(existing).
 		Where("id = ?", id).
-		Exists(ctx)
+		Scan(ctx)
 	if err != nil {
-		return fmt.Errorf("classify update miss: %w", err)
+		if errors.Is(err, sql.ErrNoRows) {
+			return domain.ErrNotFound
+		}
+		return fmt.Errorf("classify draft mutation miss: %w", err)
 	}
-	if !exists {
-		return domain.ErrNotFound
+	if existing.Status == model.StatusSent {
+		return domain.ErrAlreadySent
+	}
+	if existing.Status == model.StatusDraft && existing.GroupID != nil && *existing.GroupID != "" {
+		return domain.ErrSendInProgress
 	}
 	return domain.ErrVersionMismatch
 }

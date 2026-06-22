@@ -236,6 +236,9 @@ func (s *NewsletterService) UpdateDraft(ctx context.Context, projectUID string, 
 	if existing.Status == model.StatusSent {
 		return nil, domain.ErrAlreadySent
 	}
+	if sendInProgress(existing) {
+		return nil, domain.ErrSendInProgress
+	}
 
 	existing.Subject = strings.TrimSpace(in.Subject)
 	existing.BodyHTML = in.BodyHTML
@@ -261,7 +264,14 @@ func (s *NewsletterService) DeleteDraft(ctx context.Context, projectUID string, 
 	if existing.Status == model.StatusSent {
 		return domain.ErrAlreadySent
 	}
+	if sendInProgress(existing) {
+		return domain.ErrSendInProgress
+	}
 	return s.repo.Delete(ctx, id)
+}
+
+func sendInProgress(n *model.Newsletter) bool {
+	return n != nil && n.Status == model.StatusDraft && n.GroupID != nil && strings.TrimSpace(*n.GroupID) != ""
 }
 
 func validateProjectUID(projectUID string) error {
