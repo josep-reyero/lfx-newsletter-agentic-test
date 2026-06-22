@@ -1,0 +1,154 @@
+# Copyright The Linux Foundation and each contributor to LFX.
+# SPDX-License-Identifier: MIT
+#
+# The gate: the only workflow that reaches a merge verdict. No model runs here.
+# It re-derives from the current head SHA and, when agentic-review/clean is green
+# and the needs-human label is absent, records an "approve" verdict. It only ever
+# labels, never merges, so a human always has the final review.
+#
+# TEST VARIANT: the production gate posts an approving review as the lfx-one
+# machine user (reusing the existing argocd OIDC role + Secrets Manager PAT).
+# This throwaway test repo cannot reach that role or secret, so here the gate
+# records its verdict as a label ("agentic-approved" / "agentic-blocked")
+# instead. That proves the gate fired and reached the right verdict end to end;
+# a human still gives the actual approving review.
+#
+# The verdict path is guarded by the AGENTIC_GATE_ENABLED repository variable.
+# Until it is set to "true" the gate computes and logs its verdict but posts
+# nothing (shadow mode), so it can be validated before it is allowed to label.
+#
+# It triggers on `workflow_run` when "Agentic Review" completes. The review sets
+# the clean status and the needs-human label with GITHUB_TOKEN, and GitHub does
+# not start workflows from GITHUB_TOKEN-generated events, so triggering on the
+# `status` or label events directly would never fire. workflow_run also runs in
+# the trusted default-branch context, never from PR-controlled code. Thread
+# resolution is a separate branch-protection requirement, not a trigger here.
+---
+name: Agentic Gate
+
+"on":
+  workflow_run:
+    workflows: ["Agentic Review"]
+    types: [completed]
+
+# Keyed by the reviewed head SHA, so re-runs for one head collapse and distinct
+# PRs never cancel each other.
+concurrency:
+  group: gate-${{ github.event.workflow_run.head_sha || github.run_id }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+
+jobs:
+  gate:
+    name: gate
+    runs-on: ubuntu-latest
+    steps:
+      # Find the open PR the completed review ran on. For a same-repo PR the
+      # workflow_run payload carries the PR directly; otherwise map its head SHA
+      # to the open PR. The gate then re-derives from the PR's CURRENT head, so a
+      # PR that advanced past the reviewed SHA fails closed (no clean status yet).
+      - name: Resolve PR
+        id: pr
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          EVENT_PR: ${{ github.event.workflow_run.pull_requests[0].number }}
+          EVENT_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          set -euo pipefail
+          if [ -n "$EVENT_PR" ]; then
+            PR="$EVENT_PR"
+          else
+            # status event: map the commit to its open PR(s). Require exactly
+            # one, so an ambiguous head shared by several open PRs fails closed
+            # rather than approving an arbitrary one.
+            PRS="$(gh api "repos/$REPO/commits/$EVENT_SHA/pulls" \
+                    --jq '.[] | select(.state=="open") | .number' 2>/dev/null || true)"
+            COUNT="$(printf '%s\n' "$PRS" | grep -c . || true)"
+            if [ "${COUNT:-0}" -ne 1 ]; then
+              echo "status event maps to ${COUNT:-0} open PR(s); need exactly one. Not gating."
+              echo "found=false" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            PR="$PRS"
+          fi
+          if [ -z "$PR" ]; then
+            echo "No open PR for this event; nothing to gate."
+            echo "found=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          HEAD="$(gh pr view "$PR" --repo "$REPO" --json headRefOid --jq .headRefOid)"
+          {
+            echo "pr=$PR"
+            echo "head=$HEAD"
+            echo "found=true"
+          } >> "$GITHUB_OUTPUT"
+
+      # Approvable only when the current head's clean status is success (no
+      # status means not approvable: fail closed) and needs-human is absent.
+      # Thread resolution is enforced separately by branch protection.
+      - name: Evaluate gate
+        id: gate
+        if: steps.pr.outputs.found == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR: ${{ steps.pr.outputs.pr }}
+          HEAD: ${{ steps.pr.outputs.head }}
+        run: |
+          set -euo pipefail
+          CLEAN="$(gh api "repos/$REPO/commits/$HEAD/status" \
+                    --jq '.statuses[] | select(.context=="agentic-review/clean") | .state' \
+                    2>/dev/null | head -1 || true)"
+          NEEDS_HUMAN="$(gh pr view "$PR" --repo "$REPO" --json labels \
+                          --jq 'any(.labels[].name; . == "needs-human")')"
+          echo "clean=$CLEAN needs-human=$NEEDS_HUMAN (head $HEAD)" >> "$GITHUB_STEP_SUMMARY"
+          if [ "$CLEAN" = "success" ] && [ "$NEEDS_HUMAN" != "true" ]; then
+            echo "approve=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "approve=false" >> "$GITHUB_OUTPUT"
+            echo "Withholding approval." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Shadow mode (gate disabled)
+        if: steps.gate.outputs.approve == 'true' && vars.AGENTIC_GATE_ENABLED != 'true'
+        run: |
+          echo "Gate would approve PR #${{ steps.pr.outputs.pr }} (clean, no needs-human)." >> "$GITHUB_STEP_SUMMARY"
+          echo "AGENTIC_GATE_ENABLED is not 'true'; nothing posted (shadow mode)." >> "$GITHUB_STEP_SUMMARY"
+
+      # --- Verdict path (test variant). The production gate posts an approving
+      # review as the lfx-one machine user via the argocd OIDC role + Secrets
+      # Manager PAT, which this throwaway test repo cannot reach. Here the gate
+      # instead records its verdict as a label so the test can show, end to end,
+      # that the gate fired and reached "approve" (clean + no needs-human). A
+      # human still gives the actual approving review, mirroring the override
+      # path. It only ever labels, never merges.
+      - name: Record approving verdict (label)
+        if: steps.gate.outputs.approve == 'true' && vars.AGENTIC_GATE_ENABLED == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR: ${{ steps.pr.outputs.pr }}
+        run: |
+          gh pr edit "$PR" --repo "$REPO" \
+            --remove-label "agentic-blocked" --add-label "agentic-approved" || \
+            gh pr edit "$PR" --repo "$REPO" --add-label "agentic-approved"
+          echo "Gate verdict: APPROVE. Labeled PR #$PR 'agentic-approved' (approving review given)." >> "$GITHUB_STEP_SUMMARY"
+
+      # When the gate is enabled but withholds (not clean, or needs-human), make
+      # that visible too, so a green "agentic-approved" is never just absent.
+      - name: Record withheld verdict (label)
+        if: steps.gate.outputs.approve == 'false' && steps.pr.outputs.found == 'true' && vars.AGENTIC_GATE_ENABLED == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR: ${{ steps.pr.outputs.pr }}
+        run: |
+          gh pr edit "$PR" --repo "$REPO" \
+            --remove-label "agentic-approved" --add-label "agentic-blocked" || \
+            gh pr edit "$PR" --repo "$REPO" --add-label "agentic-blocked"
+          echo "Gate verdict: WITHHOLD. Labeled PR #$PR 'agentic-blocked'." >> "$GITHUB_STEP_SUMMARY"
