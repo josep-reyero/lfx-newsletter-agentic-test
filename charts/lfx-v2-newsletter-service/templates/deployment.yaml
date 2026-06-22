@@ -53,9 +53,7 @@ spec:
               value: {{ .Values.app.logLevel | quote }}
             # NATS — used by the email dispatcher, committee member client,
             # and project metadata client. Newsletter-service makes no HTTP
-            # upstream calls (the previous COMMITTEE_SERVICE_URL was retired
-            # along with the HTTP committee_client because Heimdall-minted
-            # JWTs failed OIDC validation at query-service).
+            # upstream calls for recipient resolution or dispatch.
             - name: NATS_URL
               value: {{ .Values.app.nats.url | quote }}
             {{- with .Values.app.nats.timeout }}
@@ -74,6 +72,10 @@ spec:
               value: {{ .Values.app.send.fanoutEnabled | quote }}
             {{- with .Values.app.send.concurrency }}
             - name: SEND_CONCURRENCY
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .Values.app.send.fromAddress }}
+            - name: EMAIL_FROM_ADDRESS
               value: {{ . | quote }}
             {{- end }}
             - name: NEWSLETTER_PUBLIC_BASE_URL

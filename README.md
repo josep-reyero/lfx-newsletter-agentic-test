@@ -6,16 +6,18 @@ the draft → sent state transition.
 ## Responsibilities
 
 - Persist newsletter drafts and sent history (CloudNativePG-backed Postgres).
-- Resolve recipient lists from committees (read-only HTTP calls to the LFX v2
-  query service).
+- Resolve recipient lists from committees over NATS request/reply.
 - Expose an HTTP REST API consumed by the lfx-v2-ui Express server.
+- Dispatch newsletter email per recipient to `lfx-v2-email-service` over NATS,
+  threading a configurable envelope From address, a project-derived From display
+  name, and the Executive Director Reply-To.
 
-> **Out of scope right now:** actual email delivery. `/newsletters/test-send`
-> and `/newsletters/drafts/{id}/send` validate inputs, resolve recipient counts,
-> and (for `/send`) flip the draft to `status=sent` in the database — but they
-> do **not** dispatch any email. Wiring up a real email publisher
-> (e.g. publishing to `lfx-v2-email-service` over NATS) is a planned follow-up.
-> AI content generation continues to live in lfx-v2-ui.
+> **Email delivery:** `/newsletters/test-send` and
+> `/newsletters/drafts/{id}/send` validate inputs, resolve recipients, render
+> the email chrome, and fan out a per-recipient `send_email` request to
+> `lfx-v2-email-service` over NATS. `/send` flips the draft to `status=sent` in
+> the database after dispatch. AI content generation continues to live in
+> lfx-v2-ui.
 
 ## Quick Start
 
@@ -33,8 +35,9 @@ Two supported paths for running the service locally:
 - Go 1.25+
 - A running PostgreSQL 16+ instance (Path A) **or** OrbStack/kind with `kubectl`,
   `helm` 3.8+, and [`ko`](https://ko.build) (Path B)
-- A reachable `lfx-v2-query-service` (or a stubbed `COMMITTEE_SERVICE_URL` —
-  the service starts without it being live, but recipient resolution will fail)
+- A reachable NATS (committee resolution and email-service fan-out travel over
+  NATS; `NATS_URL` defaults to `nats://nats:4222`) — the service starts without
+  it being live, but recipient resolution and sends will fail
 
 ---
 
@@ -53,8 +56,10 @@ you do **not** need to run any SQL files manually.
 
 ```bash
 export DATABASE_URL='postgres://<your-user>@localhost:5432/newsletters?sslmode=disable'
-export COMMITTEE_SERVICE_URL='http://localhost:8081'   # lfx-v2-query-service / API gateway
+export NATS_URL='nats://localhost:4222'                # committee resolution + email-service fan-out
 export REQUIRE_USER_AUTH=false                         # local only — production must verify JWTs
+export NEWSLETTER_PUBLIC_BASE_URL='http://localhost:8080'
+export NEWSLETTER_UNSUBSCRIBE_SECRET='local-dev-change-me'
 export LOG_LEVEL=debug
 ```
 
@@ -81,9 +86,10 @@ curl -s http://localhost:8080/livez && echo
 # → ok
 ```
 
-If you see `missing required env vars: DATABASE_URL, COMMITTEE_SERVICE_URL`,
-the env vars above are not set in the shell you ran `make run` from — `make`
-does **not** load your shell rc.
+If you see `missing required env vars: DATABASE_URL` (plus
+`NEWSLETTER_UNSUBSCRIBE_SECRET` / `NEWSLETTER_PUBLIC_BASE_URL` when
+`SEND_FANOUT_ENABLED=true`, the default), those vars are not set in the shell you
+ran `make run` from — `make` does **not** load your shell rc.
 
 ---
 
@@ -119,8 +125,8 @@ cp charts/lfx-v2-newsletter-service/values.local.yaml.example \
 
 The example file pins the chart to `database.mode=cluster+database`, points
 `image.repository` at `ko.local/newsletter-api`, disables `requireUserAuth`,
-and disables the NetworkPolicy for easier debugging. Adjust
-`app.committeeServiceURL` to point at your local query-service if needed.
+and disables the NetworkPolicy for easier debugging. Adjust `app.nats.url` if
+your local NATS service is not reachable at the example value.
 
 **4. Install the chart.**
 
@@ -213,7 +219,7 @@ internal/domain/
 
 internal/service/
 ├── newsletter.go             # CRUD + validation + state transitions
-└── send_orchestrator.go      # resolve recipients, mark draft sent (no email dispatch)
+└── send_orchestrator.go      # resolve recipients, fan out via email-service, mark sent
 
 internal/repository/
 └── postgres.go               # bun-backed NewsletterRepository with optimistic locking
@@ -231,7 +237,7 @@ internal/handler/
 
 internal/infrastructure/
 ├── observability/            # OTel SDK + slog handler
-└── upstream/                 # HTTP client for committee/query service
+└── nats/                     # NATS clients for committee, project, email-service
 
 pkg/api/
 └── newsletter.go             # public DTOs (mirror lfx-v2-ui shared interfaces)
@@ -274,10 +280,10 @@ production (per-service Postgres roles with least-privilege secrets).
 | GET    | `/newsletters/drafts/{id}`            | fetch draft (returns ETag)                   |
 | PUT    | `/newsletters/drafts/{id}`            | update draft (requires If-Match)             |
 | DELETE | `/newsletters/drafts/{id}`            | delete draft                                 |
-| POST   | `/newsletters/drafts/{id}/send`       | mark draft as sent (no email)                |
+| POST   | `/newsletters/drafts/{id}/send`       | fan out to recipients via email-service, mark sent |
 | POST   | `/newsletters/recipient-count`        | preview unique recipient count               |
 | POST   | `/newsletters/recipients`             | preview recipient list                       |
-| POST   | `/newsletters/test-send`              | validate-only stub (no email)                |
+| POST   | `/newsletters/test-send`              | send a test email via email-service          |
 | GET    | `/newsletters`                        | unified list of newsletters for a context    |
 | GET    | `/newsletter-analytics/{id}`          | per-newsletter analytics (opens, recipients) |
 | GET    | `/newsletter-opens/{id}`              | open-tracking pixel (unauthenticated GIF)    |
@@ -291,5 +297,6 @@ column atomically incremented on each `UPDATE`. `GET` returns
 
 | Service                          | Relationship                                                  |
 | -------------------------------- | ------------------------------------------------------------- |
-| `lfx-v2-query-service`           | Source of committee member emails (via `/query/resources`)    |
+| `lfx-v2-committee-service`       | Source of committee members via NATS request/reply             |
+| `lfx-v2-email-service`           | Sends rendered newsletter email via NATS `send_email`          |
 | `lfx-v2-ui` (Express server)     | HTTP client; proxies UI requests to this service               |

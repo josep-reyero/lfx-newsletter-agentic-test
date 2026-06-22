@@ -5,14 +5,18 @@
 The LFX V2 Newsletter Service is a Go microservice in the LFX v2 platform. It owns:
 
 - **Persistence** of newsletter drafts and send history in PostgreSQL (CloudNativePG-backed).
-- **Recipient resolution** via HTTP calls to the LFX v2 query service.
+- **Recipient resolution** from committees over NATS request/reply.
 - **State transitions** for drafts (draft → sent).
+- **Email dispatch**: `/newsletters/test-send` and `/newsletters/drafts/{id}/send`
+  resolve recipients, render the email chrome, and fan out a per-recipient
+  `send_email` request to `lfx-v2-email-service` over NATS; `/send` then flips the
+  draft to `status=sent` after dispatch.
 
-> **Out of scope right now:** actual email delivery. `/newsletters/test-send`
-> and `/newsletters/drafts/{id}/send` validate input and mark the persisted
-> draft as sent — but do not dispatch any email. Wiring up a real email
-> publisher (e.g. publishing to `lfx-v2-email-service` over NATS) is a
-> planned follow-up.
+> **Email delivery is in scope.** `/newsletters/test-send` and
+> `/newsletters/drafts/{id}/send` dispatch real email via `lfx-v2-email-service`
+> over NATS (threading a configurable envelope From address, a project-derived
+> From display name, and the Executive Director Reply-To). Fan-out is gated by
+> `SEND_FANOUT_ENABLED` (default true).
 >
 > AI content generation continues to live in `lfx-v2-ui`; this service does
 > not proxy AI calls.
@@ -44,7 +48,7 @@ internal/domain/
 
 internal/service/
 ├── newsletter.go             # CRUD + validation + state transitions
-└── send_orchestrator.go      # Resolve recipients, mark draft sent (no email dispatch)
+└── send_orchestrator.go      # Resolve recipients, fan out via email-service, mark sent
 
 internal/repository/
 └── postgres.go               # bun-backed NewsletterRepository with optimistic locking
@@ -64,9 +68,10 @@ internal/infrastructure/
 ├── observability/
 │   ├── log.go                # slog + OTel handler init
 │   └── otel.go               # OTel SDK bootstrap
-└── upstream/
-    ├── committee_client.go   # HTTP client for committee/query service
-    └── http_helpers.go       # bearer token context, JSON parser
+└── nats/
+    ├── committee_client.go   # NATS client for committee member lookup
+    ├── email_dispatcher.go   # NATS client for email-service send/analytics
+    └── project_client.go     # NATS client for project metadata
 
 pkg/api/
 └── newsletter.go             # Public contract: request/response DTOs
@@ -122,5 +127,6 @@ Every `.go` file must start with:
 
 | Service                    | Relationship                                                      |
 | -------------------------- | ----------------------------------------------------------------- |
-| `lfx-v2-query-service`     | Source of committee member emails (via `/query/resources` HTTP)   |
+| `lfx-v2-committee-service` | Source of committee members via NATS request/reply                 |
+| `lfx-v2-email-service`     | Sends rendered newsletter email via NATS `send_email`              |
 | `lfx-v2-ui` Express server | HTTP client; proxies UI requests to this service                  |

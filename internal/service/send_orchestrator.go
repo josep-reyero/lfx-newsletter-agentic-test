@@ -24,6 +24,28 @@ import (
 // defaultSendConcurrency caps in-flight email-service requests during fan-out.
 const defaultSendConcurrency = 5
 
+// defaultFromAddress is the SMTP envelope From used when the orchestrator is
+// constructed without an explicit FromAddress (e.g. tests). Production wiring
+// always sets one through SendOrchestratorConfig.
+const defaultFromAddress = "newsletter@lfx.linuxfoundation.org"
+
+// fromDisplayNameSuffix is appended to the project name to build the From
+// display name, yielding e.g. "Kubernetes Newsletter".
+const fromDisplayNameSuffix = " Newsletter"
+
+// resolveProjectName returns the trimmed project display name for the given
+// project UID, falling back to "Project" when metadata is unavailable or the
+// resolved name is blank. Trimming avoids leading/trailing whitespace leaking
+// into the From display name (e.g. "  Kubernetes  Newsletter").
+func (o *SendOrchestrator) resolveProjectName(ctx context.Context, projectUID string) string {
+	name, _ := o.project.Name(ctx, projectUID)
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return "Project"
+	}
+	return name
+}
+
 // SendOrchestrator coordinates recipient resolution, email-chrome rendering,
 // per-recipient fan-out to lfx-v2-email-service, and the draft → sent state
 // transition. It owns the email-service integration; the UI no longer talks
@@ -36,6 +58,7 @@ type SendOrchestrator struct {
 	unsub         *UnsubscribeService
 	concurrency   int
 	fanoutEnabled bool
+	fromAddress   string
 }
 
 // SendOrchestratorConfig configures a SendOrchestrator.
@@ -50,6 +73,9 @@ type SendOrchestratorConfig struct {
 	// Defaults to true; flip false in environments where we want to validate
 	// the recipient-resolution path without sending real mail.
 	FanoutEnabled bool
+	// FromAddress is the SMTP envelope From applied to every outbound email.
+	// Empty falls back to defaultFromAddress.
+	FromAddress string
 }
 
 // NewSendOrchestrator wires a SendOrchestrator.
@@ -57,6 +83,10 @@ func NewSendOrchestrator(cfg SendOrchestratorConfig) *SendOrchestrator {
 	c := cfg.Concurrency
 	if c <= 0 {
 		c = defaultSendConcurrency
+	}
+	from := strings.TrimSpace(cfg.FromAddress)
+	if from == "" {
+		from = defaultFromAddress
 	}
 	return &SendOrchestrator{
 		repo:          cfg.Repo,
@@ -66,6 +96,7 @@ func NewSendOrchestrator(cfg SendOrchestratorConfig) *SendOrchestrator {
 		unsub:         cfg.Unsubscribe,
 		concurrency:   c,
 		fanoutEnabled: cfg.FanoutEnabled,
+		fromAddress:   from,
 	}
 }
 
@@ -121,10 +152,8 @@ func (o *SendOrchestrator) SendNewsletter(ctx context.Context, in SendNewsletter
 		return nil, fmt.Errorf("resolve recipients: %w", err)
 	}
 
-	projectName, _ := o.project.Name(ctx, draft.ProjectUID)
-	if projectName == "" {
-		projectName = "Project"
-	}
+	projectName := o.resolveProjectName(ctx, draft.ProjectUID)
+	fromDisplayName := projectName + fromDisplayNameSuffix
 
 	chrome := render.Chrome{
 		Subject:                 draft.Subject,
@@ -142,7 +171,16 @@ func (o *SendOrchestrator) SendNewsletter(ctx context.Context, in SendNewsletter
 
 	groupID := uuid.NewString()
 
-	sent, failed, failures := o.fanOut(ctx, draft.ProjectUID, recipients, draft.Subject, htmlBody, textBody, groupID)
+	envelope := emailEnvelope{
+		Subject:         draft.Subject,
+		HTML:            htmlBody,
+		Text:            textBody,
+		From:            o.fromAddress,
+		FromDisplayName: fromDisplayName,
+		ReplyTo:         draft.EDReplyEmail,
+		GroupID:         groupID,
+	}
+	sent, failed, failures := o.fanOut(ctx, draft.ProjectUID, recipients, envelope)
 
 	// Only flip the draft to `sent` when at least one recipient was delivered
 	// to. If every send failed (email-service unreachable, all recipients
@@ -215,10 +253,8 @@ func (o *SendOrchestrator) TestSend(ctx context.Context, in TestSendInput) error
 		return fmt.Errorf("%w: to_email is not a valid email: %v", domain.ErrInvalidRequest, err)
 	}
 
-	projectName, _ := o.project.Name(ctx, in.ProjectUID)
-	if projectName == "" {
-		projectName = "Project"
-	}
+	projectName := o.resolveProjectName(ctx, in.ProjectUID)
+	fromDisplayName := projectName + fromDisplayNameSuffix
 
 	chrome := render.Chrome{
 		Subject:                 in.Subject,
@@ -237,10 +273,13 @@ func (o *SendOrchestrator) TestSend(ctx context.Context, in TestSendInput) error
 		return nil
 	}
 	_, err := o.email.SendEmail(ctx, port.SendEmailInput{
-		To:      strings.TrimSpace(in.ToEmail),
-		Subject: in.Subject,
-		HTML:    htmlBody,
-		Text:    textBody,
+		To:              strings.TrimSpace(in.ToEmail),
+		Subject:         in.Subject,
+		HTML:            htmlBody,
+		Text:            textBody,
+		From:            o.fromAddress,
+		FromDisplayName: fromDisplayName,
+		ReplyTo:         strings.TrimSpace(in.EDReplyEmail),
 	})
 	if err != nil {
 		return fmt.Errorf("dispatch test-send: %w", err)
@@ -349,19 +388,32 @@ func (o *SendOrchestrator) listUnsubscribed(ctx context.Context, projectUID stri
 	return o.unsub.repo.ListUnsubscribedEmails(ctx, projectUID)
 }
 
+// emailEnvelope bundles the per-send fields shared across every recipient in a
+// fan-out. Bundling them keeps fanOut's signature small as we add personalization
+// fields (from, from_display_name, reply_to) to the per-recipient send.
+type emailEnvelope struct {
+	Subject         string
+	HTML            string
+	Text            string
+	From            string
+	FromDisplayName string
+	ReplyTo         string
+	GroupID         string
+}
+
 // fanOut dispatches per-recipient send_email requests to email-service with
 // bounded concurrency. The fan-out never returns an error — per-recipient
 // failures are captured and surfaced in the result so the caller can decide
 // how to react. A nil EmailDispatcher (or FanoutEnabled=false) short-circuits
 // to "all sent, none failed" for dev/test environments.
-func (o *SendOrchestrator) fanOut(ctx context.Context, projectUID string, recipients []model.CommitteeMember, subject, htmlBody, textBody, groupID string) (sent, failed int, failures []SendFailure) {
+func (o *SendOrchestrator) fanOut(ctx context.Context, projectUID string, recipients []model.CommitteeMember, env emailEnvelope) (sent, failed int, failures []SendFailure) {
 	if len(recipients) == 0 {
 		return 0, 0, nil
 	}
 	if !o.fanoutEnabled {
 		slog.InfoContext(ctx, "send fanout disabled, marking all as sent without dispatch",
 			"total_recipients", len(recipients),
-			"group_id", groupID,
+			"group_id", env.GroupID,
 		)
 		return len(recipients), 0, nil
 	}
@@ -389,7 +441,7 @@ func (o *SendOrchestrator) fanOut(ctx context.Context, projectUID string, recipi
 		go func() {
 			defer wg.Done()
 			defer func() { <-sem }()
-			recipientHTML, recipientText := htmlBody, textBody
+			recipientHTML, recipientText := env.HTML, env.Text
 			if o.unsub.Enabled() {
 				url := o.unsub.BuildURL(projectUID, recipient.Email)
 				// Substitution runs over the full rendered body, including the
@@ -397,8 +449,8 @@ func (o *SendOrchestrator) fanOut(ctx context.Context, projectUID string, recipi
 				// UnsubscribeURLPlaceholder in the draft would just be replaced
 				// with a working per-recipient link), but worth noting if we
 				// ever expose %%-delimited placeholders to authors.
-				recipientHTML = strings.ReplaceAll(htmlBody, UnsubscribeURLPlaceholder, url)
-				recipientText = strings.ReplaceAll(textBody, UnsubscribeURLPlaceholder, url)
+				recipientHTML = strings.ReplaceAll(env.HTML, UnsubscribeURLPlaceholder, url)
+				recipientText = strings.ReplaceAll(env.Text, UnsubscribeURLPlaceholder, url)
 			}
 			// Honour the nil-dispatcher contract documented above. Production
 			// wiring always provides one, but tests and misconfigured local
@@ -410,11 +462,14 @@ func (o *SendOrchestrator) fanOut(ctx context.Context, projectUID string, recipi
 				return
 			}
 			_, err := o.email.SendEmail(ctx, port.SendEmailInput{
-				To:      recipient.Email,
-				Subject: subject,
-				HTML:    recipientHTML,
-				Text:    recipientText,
-				GroupID: groupID,
+				To:              recipient.Email,
+				Subject:         env.Subject,
+				HTML:            recipientHTML,
+				Text:            recipientText,
+				From:            env.From,
+				FromDisplayName: env.FromDisplayName,
+				ReplyTo:         env.ReplyTo,
+				GroupID:         env.GroupID,
 			})
 			mu.Lock()
 			defer mu.Unlock()
@@ -423,7 +478,7 @@ func (o *SendOrchestrator) fanOut(ctx context.Context, projectUID string, recipi
 				failures = append(failures, SendFailure{Email: recipient.Email, Error: err.Error()})
 				slog.WarnContext(ctx, "send fanout: recipient failed",
 					"recipient", redactEmail(recipient.Email),
-					"group_id", groupID,
+					"group_id", env.GroupID,
 					"error", err.Error(),
 				)
 				return
