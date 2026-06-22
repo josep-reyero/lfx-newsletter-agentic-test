@@ -40,9 +40,15 @@ spec:
     - ports:
         - port: {{ .Values.networkPolicy.postgresPort }}
           protocol: TCP
-    # Upstream HTTP services (committee, project) and JWKS endpoint over HTTPS.
-    # Wide-open HTTPS is acceptable for this PoC; tighten with namespace selectors
-    # once API gateway topology stabilizes.
+    # NATS — recipient resolution (committee), project metadata, email dispatch,
+    # and engagement analytics are all NATS request/reply, and the clients are
+    # established at startup. Without this the pod cannot reach any upstream.
+    - ports:
+        - port: {{ .Values.networkPolicy.natsPort }}
+          protocol: TCP
+    # JWKS endpoint over HTTPS (and any remaining upstream HTTP). Wide-open HTTPS
+    # is acceptable for this PoC; tighten with namespace selectors once API
+    # gateway topology stabilizes.
     - ports:
         - port: 80
           protocol: TCP

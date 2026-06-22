@@ -68,6 +68,13 @@ app:
     # Empty string falls back to the app default (5).
     concurrency: ""
 
+  # publicAPIBaseURL is the externally reachable base URL of this service, used
+  # to build the per-recipient open-tracking pixel injected into outbound
+  # newsletter HTML. Empty string defaults (in the Deployment) to
+  # https://lfx-api.{{ lfx.domain }}; set to a literal "" override via extraEnv
+  # only if you want to disable local open tracking entirely.
+  publicAPIBaseURL: ""
+
   # jwksURL is the URL of the JWKS endpoint used to verify inbound JWTs.
   # REQUIRED when requireUserAuth=true (default).
   jwksURL: ""
@@ -160,12 +167,17 @@ serviceAccount:
   annotations: {}
 
 # networkPolicy controls the Kubernetes NetworkPolicy for this workload.
-# Allows egress to OTel, upstream HTTP services, and Postgres.
+# Allows egress to OTel, NATS (recipient/project/email/analytics calls and
+# startup clients), upstream HTTP/JWKS, and Postgres.
 networkPolicy:
   enabled: true
   otelGRPCPort: 4317
   otelHTTPPort: 4318
   postgresPort: 5432
+  # natsPort is the client port of the NATS server. All upstream committee,
+  # project-metadata, email-dispatch, and analytics calls — plus the startup
+  # clients — go over NATS, so egress must allow it or the pod cannot start.
+  natsPort: 4222
 
 # httpRoute toggles the Gateway API HTTPRoute (templates/httproute.yaml).
 # Disable when deploying behind a different ingress (e.g. plain Service +

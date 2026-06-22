@@ -44,6 +44,15 @@ type NewsletterRepository interface {
 	ListAll(ctx context.Context, filters ListFilters) (*ListPage, error)
 	Update(ctx context.Context, n *model.Newsletter, expectedVersion int64) (*model.Newsletter, error)
 	Delete(ctx context.Context, id uuid.UUID) error
+
+	// PersistSendIntent durably records the minted group_id on a draft *before*
+	// fan-out begins, without leaving the draft state. This makes the send
+	// idempotent: if the process dies mid-send or every delivery fails, a retry
+	// reuses the same group_id rather than minting a new one and re-sending
+	// under a fresh correlation key. No-op if the draft already carries a
+	// group_id (returns the existing one).
+	PersistSendIntent(ctx context.Context, id uuid.UUID, groupID string, expectedVersion int64) (string, error)
+
 	MarkSent(ctx context.Context, id uuid.UUID, sentAt time.Time, totalRecipients int, groupID string, expectedVersion int64) (*model.Newsletter, error)
 
 	// Open tracking

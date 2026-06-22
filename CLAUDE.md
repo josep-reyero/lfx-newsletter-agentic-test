@@ -2,19 +2,19 @@
 
 ## Project Overview
 
-The LFX V2 Newsletter Service is a Go microservice in the LFX v2 platform. It owns:
+The LFX V2 Newsletter Service is a Go microservice in the LFX v2 platform. All
+APIs are project-scoped under `/projects/{project_uid}/...`. It owns:
 
 - **Persistence** of newsletter drafts and send history in PostgreSQL (CloudNativePG-backed).
-- **Recipient resolution** via HTTP calls to the LFX v2 query service.
+- **Recipient resolution** via NATS request/reply to lfx-v2-committee-service
+  (`lfx.committee-api.list_members`), authorized against the request's project.
+- **Email dispatch** by fanning out per-recipient `send_email` requests to
+  lfx-v2-email-service over NATS, then transitioning the draft to `sent` only
+  when at least one delivery is accepted.
 - **State transitions** for drafts (draft → sent).
+- **Open tracking** via a local pixel endpoint and the `newsletter_opens` table.
 
-> **Out of scope right now:** actual email delivery. `/newsletters/test-send`
-> and `/newsletters/drafts/{id}/send` validate input and mark the persisted
-> draft as sent — but do not dispatch any email. Wiring up a real email
-> publisher (e.g. publishing to `lfx-v2-email-service` over NATS) is a
-> planned follow-up.
->
-> AI content generation continues to live in `lfx-v2-ui`; this service does
+> AI content generation continues to live in the authoring UI; this service does
 > not proxy AI calls.
 
 ## Key Technologies

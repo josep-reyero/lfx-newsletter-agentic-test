@@ -186,6 +186,56 @@ func (r *PostgresNewsletterRepo) Delete(ctx context.Context, id uuid.UUID) error
 	return nil
 }
 
+// PersistSendIntent durably records group_id on a draft before fan-out so a
+// crashed or fully-failed send can be retried under the same correlation key
+// instead of minting a new group and re-sending blindly. The draft stays in
+// status=draft and its version is unchanged, so the subsequent MarkSent still
+// matches on the caller's expected version. If the draft already carries a
+// group_id (a prior attempt), that existing value is returned and reused.
+func (r *PostgresNewsletterRepo) PersistSendIntent(ctx context.Context, id uuid.UUID, groupID string, expectedVersion int64) (string, error) {
+	existing := &model.Newsletter{}
+	if err := r.db.NewSelect().
+		Model(existing).
+		Where("id = ?", id).
+		Scan(ctx); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return "", domain.ErrNotFound
+		}
+		return "", fmt.Errorf("persist send intent: load: %w", err)
+	}
+	if existing.Status == model.StatusSent {
+		return "", domain.ErrAlreadySent
+	}
+	if existing.Version != expectedVersion {
+		return "", domain.ErrVersionMismatch
+	}
+	if existing.GroupID != nil && *existing.GroupID != "" {
+		return *existing.GroupID, nil
+	}
+	// Record the intent without bumping version or changing status. Guard on the
+	// version so a concurrent writer can't slip in between the load and update.
+	res, err := r.db.NewUpdate().
+		Model((*model.Newsletter)(nil)).
+		Table("newsletters").
+		Set("group_id = ?", groupID).
+		Where("id = ? AND version = ? AND status = ? AND group_id IS NULL", id, expectedVersion, model.StatusDraft).
+		Exec(ctx)
+	if err != nil {
+		return "", fmt.Errorf("persist send intent: %w", err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		// Lost a race: re-read and return whatever group is now durable.
+		if err := r.db.NewSelect().Model(existing).Where("id = ?", id).Scan(ctx); err != nil {
+			return "", fmt.Errorf("persist send intent: reload: %w", err)
+		}
+		if existing.GroupID != nil && *existing.GroupID != "" {
+			return *existing.GroupID, nil
+		}
+		return "", domain.ErrVersionMismatch
+	}
+	return groupID, nil
+}
+
 // MarkSent transitions a draft to status=sent atomically, gated on the expected
 // version. Captures the audience size and the lfx-v2-email-service group_id
 // at send time so analytics can compute open rates without re-resolving
@@ -225,9 +275,13 @@ func (r *PostgresNewsletterRepo) RecordOpen(ctx context.Context, newsletterID uu
 		NewsletterID:  newsletterID,
 		RecipientHash: recipientHash,
 	}
+	// uq_opens_newsletter_recipient_hour is a unique INDEX (CREATE UNIQUE INDEX),
+	// not a named table constraint, so ON CONFLICT must infer it from the index
+	// columns — `ON CONFLICT ON CONSTRAINT <name>` only matches real constraints
+	// and would error at runtime.
 	if _, err := r.db.NewInsert().
 		Model(open).
-		On("CONFLICT ON CONSTRAINT uq_opens_newsletter_recipient_hour DO NOTHING").
+		On("CONFLICT (newsletter_id, recipient_hash, opened_at_hour) DO NOTHING").
 		Exec(ctx); err != nil {
 		return fmt.Errorf("record open: %w", err)
 	}

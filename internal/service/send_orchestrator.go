@@ -142,7 +142,15 @@ func (o *SendOrchestrator) SendNewsletter(ctx context.Context, in SendNewsletter
 	htmlBody := render.EmailHTML(chrome)
 	textBody := render.EmailText(chrome)
 
-	groupID := uuid.NewString()
+	// Durably record the send intent (group_id) before any email goes out. This
+	// makes the send idempotent across retries: a crash mid-fan-out or a fully
+	// failed attempt leaves the group_id persisted so the next attempt reuses
+	// the same correlation key instead of re-sending under a fresh one. The draft
+	// stays in `draft` (version unchanged) until MarkSent finalizes it below.
+	groupID, err := o.repo.PersistSendIntent(ctx, draft.ID, uuid.NewString(), draft.Version)
+	if err != nil {
+		return nil, fmt.Errorf("persist send intent: %w", err)
+	}
 
 	sent, failed, failures := o.fanOut(ctx, fanOutParams{
 		newsletterID: draft.ID,
@@ -241,7 +249,7 @@ func (o *SendOrchestrator) TestSend(ctx context.Context, in TestSendInput) error
 
 	if !o.fanoutEnabled {
 		slog.InfoContext(ctx, "test-send: fanout disabled, accepted without dispatch",
-			"to_email", in.ToEmail,
+			"to_email", redactEmail(strings.TrimSpace(in.ToEmail)),
 			"project_uid", in.ProjectUID,
 		)
 		return nil
@@ -256,7 +264,7 @@ func (o *SendOrchestrator) TestSend(ctx context.Context, in TestSendInput) error
 		return fmt.Errorf("dispatch test-send: %w", err)
 	}
 	slog.InfoContext(ctx, "test-send dispatched",
-		"to_email", in.ToEmail,
+		"to_email", redactEmail(strings.TrimSpace(in.ToEmail)),
 		"project_uid", in.ProjectUID,
 	)
 	return nil
