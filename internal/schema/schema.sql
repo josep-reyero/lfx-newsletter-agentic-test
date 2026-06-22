@@ -122,3 +122,47 @@ ALTER TABLE newsletter_opens
 -- The application is expected to use ON CONFLICT DO NOTHING when inserting.
 CREATE UNIQUE INDEX IF NOT EXISTS uq_opens_newsletter_recipient_hour
     ON newsletter_opens (newsletter_id, recipient_hash, opened_at_hour);
+
+-- newsletter_unsubscribes records project-scoped opt-outs. A row means the
+-- recipient identified by recipient_hash has unsubscribed from all newsletters
+-- for that project_uid; the address may still receive newsletters for other
+-- projects.
+--
+-- recipient_hash is a SHA-256 of the lowercased recipient email (the same
+-- HashRecipient shape used by newsletter_opens). We deliberately do NOT persist
+-- the raw address: the unsubscribe link is unauthenticated and embedded in
+-- outgoing mail, so storing plaintext PII here would put recipient addresses
+-- into durable state and into the public token. Filtering compares
+-- HashRecipient(email) against this column. The CHECK constraint enforces the
+-- 64-char lowercase hex shape so a buggy caller can't grow this table with
+-- arbitrary text. The hash is stored lowercased so the unique index makes the
+-- insert idempotent.
+--
+-- updated_at is currently write-once (set equal to created_at on insert and
+-- never touched). It is reserved for a future re-subscribe / preference-update
+-- flow where an opt-out row may be mutated (e.g. soft-deleted with a
+-- resubscribed_at timestamp) rather than hard-deleted, so the column is
+-- declared now to avoid a later ALTER TABLE.
+CREATE TABLE IF NOT EXISTS newsletter_unsubscribes (
+    id             UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+    project_uid    TEXT        NOT NULL,
+    recipient_hash TEXT        NOT NULL,
+    created_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at     TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- PG has no native IF NOT EXISTS on ADD CONSTRAINT; check pg_constraint before
+-- adding so re-running schema.sql against an existing DB is a no-op.
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint WHERE conname = 'newsletter_unsubscribes_recipient_hash_format'
+    ) THEN
+        ALTER TABLE newsletter_unsubscribes
+            ADD CONSTRAINT newsletter_unsubscribes_recipient_hash_format
+            CHECK (recipient_hash ~ '^[a-f0-9]{64}$');
+    END IF;
+END$$;
+
+CREATE UNIQUE INDEX IF NOT EXISTS uq_unsubscribes_project_recipient
+    ON newsletter_unsubscribes (project_uid, recipient_hash);

@@ -51,6 +51,16 @@ type NewsletterRepository interface {
 	Analytics(ctx context.Context, newsletterID uuid.UUID) (*model.Analytics, error)
 }
 
+// UnsubscribeRepository persists project-scoped opt-outs keyed by a SHA-256
+// recipient hash, never the raw email address.
+//
+// CreateUnsubscribe must be idempotent: a second unsubscribe for the same
+// (project_uid, recipientHash) pair must succeed silently.
+type UnsubscribeRepository interface {
+	CreateUnsubscribe(ctx context.Context, projectUID, recipientHash string) error
+	ListUnsubscribedHashes(ctx context.Context, projectUID string) (map[string]struct{}, error)
+}
+
 // CommitteeClient resolves committee members for newsletter recipient calculation.
 //
 // The concrete implementation talks to lfx-v2-committee-service via the

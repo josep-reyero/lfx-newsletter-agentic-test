@@ -76,6 +76,23 @@ spec:
             - name: SEND_CONCURRENCY
               value: {{ . | quote }}
             {{- end }}
+            - name: NEWSLETTER_PUBLIC_BASE_URL
+              value: {{ default (printf "https://lfx-api.%s" .Values.lfx.domain) .Values.app.unsubscribe.publicBaseURL | quote }}
+            {{- if .Values.app.unsubscribe.secretRef.name }}
+            - name: NEWSLETTER_UNSUBSCRIBE_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.app.unsubscribe.secretRef.name }}
+                  key: {{ .Values.app.unsubscribe.secretRef.key }}
+            {{- else if .Values.app.send.fanoutEnabled }}
+            {{/* The HMAC key is a sensitive credential and must come from a
+                 Kubernetes Secret via secretRef (or an ExternalSecret-backed
+                 Secret) — never a literal Helm value that would leak through
+                 rendered manifests, ArgoCD, and pod inspection. Fail the
+                 install instead of rendering a plaintext secret or letting the
+                 pod CrashLoop with a missing HMAC key. */}}
+            {{- required "app.unsubscribe.secretRef.name is required when app.send.fanoutEnabled is true" "" }}
+            {{- end }}
             - name: REQUIRE_USER_AUTH
               value: {{ .Values.app.requireUserAuth | quote }}
             {{- if .Values.app.jwksURL }}
