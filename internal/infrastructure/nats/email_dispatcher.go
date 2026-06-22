@@ -17,9 +17,8 @@ import (
 )
 
 // openEventWire mirrors email-service's per-event entry inside opened_at_list.
-// Defined locally instead of leaning on emailapi because the pinned
-// email-service version (v0.1.3) predates the OpenedAtList field and we want
-// to deserialize the newer shape without a dep bump.
+// Defined locally so newsletter-service can decode the deployed email-service
+// payload even when the generated emailapi type lags newer engagement fields.
 type openEventWire struct {
 	EventID  string    `json:"event_id"`
 	OpenedAt time.Time `json:"opened_at"`
@@ -28,7 +27,7 @@ type openEventWire struct {
 // emailRecipientWire is the lenient JSON shape used to decode replies from
 // lfx.email-service.get_email_status. Decoding through this struct (instead of
 // emailapi.EmailRecipientRecord) lets newsletter-service accept both:
-//   - the older flat shape exposed by email-service v0.1.3 (`opened_at`
+//   - the older flat shape (`opened_at`
 //     single timestamp; no list), and
 //   - the newer shape (`opened_at_list` per-event series + `last_opened_at`).
 //
@@ -114,11 +113,14 @@ func NewEmailDispatcher(client *Client) *EmailDispatcher {
 // aggregated reliably.
 func (d *EmailDispatcher) SendEmail(ctx context.Context, in port.SendEmailInput) (string, error) {
 	envelope := emailapi.SendEmailRequest{
-		To:      in.To,
-		Subject: in.Subject,
-		HTML:    in.HTML,
-		Text:    in.Text,
-		GroupID: in.GroupID,
+		To:              in.To,
+		Subject:         in.Subject,
+		HTML:            in.HTML,
+		Text:            in.Text,
+		From:            in.From,
+		FromDisplayName: in.FromDisplayName,
+		ReplyTo:         in.ReplyTo,
+		GroupID:         in.GroupID,
 	}
 	data, err := json.Marshal(envelope)
 	if err != nil {

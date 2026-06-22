@@ -13,6 +13,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	newsletterservice "github.com/linuxfoundation/lfx-v2-newsletter-service/internal/service"
 )
 
 // AppConfig holds all runtime configuration read from environment variables.
@@ -43,6 +45,13 @@ type AppConfig struct {
 
 	// SendConcurrency caps in-flight per-recipient sends during fan-out.
 	SendConcurrency int
+
+	// EmailFromAddress is the bare address used as the SMTP envelope From on
+	// outbound newsletters. Defaults to newsletter@linuxfoundation.org; override
+	// per environment when a different sender is configured upstream. The
+	// domain must be in the email-service allowlist or send_email will reject
+	// the request.
+	EmailFromAddress string
 
 	// UnsubscribeSecret is the HMAC key signing per-recipient unsubscribe
 	// tokens. When empty, the footer falls back to the legacy "reply with
@@ -84,6 +93,7 @@ func AppConfigFromEnv() (AppConfig, error) {
 		NATSReconnectWait: durationOr("NATS_RECONNECT_WAIT", time.Duration(defaultNATSReconnectWaitSecs)*time.Second),
 		SendFanoutEnabled: boolOr("SEND_FANOUT_ENABLED", true),
 		SendConcurrency:   intOr("SEND_CONCURRENCY", defaultSendConcurrency),
+		EmailFromAddress:  envOr("EMAIL_FROM_ADDRESS", newsletterservice.DefaultFromAddress),
 		UnsubscribeSecret: os.Getenv("NEWSLETTER_UNSUBSCRIBE_SECRET"),
 		PublicBaseURL:     strings.TrimSpace(os.Getenv("NEWSLETTER_PUBLIC_BASE_URL")),
 		JWKSURL:           os.Getenv("JWKS_URL"),
