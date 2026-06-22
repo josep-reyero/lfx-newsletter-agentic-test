@@ -13,9 +13,22 @@ the draft → sent state transition.
 > **Out of scope right now:** actual email delivery. `/newsletters/test-send`
 > and `/newsletters/drafts/{id}/send` validate inputs, resolve recipient counts,
 > and (for `/send`) flip the draft to `status=sent` in the database — but they
-> do **not** dispatch any email. Wiring up a real email publisher
+> do **not** dispatch any email. The per-recipient fan-out runs in lfx-v2-ui's
+> Express layer against `lfx-v2-email-service`; that layer mints an
+> email-service `groupId` correlation id and passes it to `/send`, which
+> persists it on the newsletter row so analytics can aggregate engagement
+> across the fanned-out sends. Wiring a real email publisher into this service
 > (e.g. publishing to `lfx-v2-email-service` over NATS) is a planned follow-up.
 > AI content generation continues to live in lfx-v2-ui.
+>
+> **`/send` request/response contract.** `POST /newsletters/drafts/{id}/send`
+> requires an `If-Match: "<version>"` header and a JSON body
+> `{"groupId": "<uuid>"}`. `groupId` must be a valid UUID (it is trimmed and
+> normalized to its canonical lowercase form before persistence). The endpoint
+> returns the updated `Newsletter` (including the persisted `groupId`) with a
+> fresh `ETag: "<version>"`. A send with zero resolvable recipients is rejected
+> (`400`) and leaves the draft actionable, so no `status=sent` row is recorded
+> for a send that could not have reached anyone.
 
 ## Quick Start
 
@@ -274,7 +287,7 @@ production (per-service Postgres roles with least-privilege secrets).
 | GET    | `/newsletters/drafts/{id}`            | fetch draft (returns ETag)                   |
 | PUT    | `/newsletters/drafts/{id}`            | update draft (requires If-Match)             |
 | DELETE | `/newsletters/drafts/{id}`            | delete draft                                 |
-| POST   | `/newsletters/drafts/{id}/send`       | mark draft as sent (no email)                |
+| POST   | `/newsletters/drafts/{id}/send`       | mark draft sent; If-Match + `{groupId}` body, returns Newsletter + ETag (no email) |
 | POST   | `/newsletters/recipient-count`        | preview unique recipient count               |
 | POST   | `/newsletters/recipients`             | preview recipient list                       |
 | POST   | `/newsletters/test-send`              | validate-only stub (no email)                |
@@ -284,8 +297,10 @@ production (per-service Postgres roles with least-privilege secrets).
 
 Optimistic concurrency control: every draft carries an integer `version`
 column atomically incremented on each `UPDATE`. `GET` returns
-`ETag: "<version>"`; `PUT` requires `If-Match: "<version>"` and returns
-`412 Precondition Failed` on a mismatch.
+`ETag: "<version>"`; `PUT` and `POST .../send` require `If-Match: "<version>"`
+and return `412 Precondition Failed` on a mismatch. A successful `send`
+increments the version and returns the new `ETag` alongside the updated
+`Newsletter`.
 
 ## Related Services
 

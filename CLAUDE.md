@@ -10,8 +10,13 @@ The LFX V2 Newsletter Service is a Go microservice in the LFX v2 platform. It ow
 
 > **Out of scope right now:** actual email delivery. `/newsletters/test-send`
 > and `/newsletters/drafts/{id}/send` validate input and mark the persisted
-> draft as sent — but do not dispatch any email. Wiring up a real email
-> publisher (e.g. publishing to `lfx-v2-email-service` over NATS) is a
+> draft as sent — but do not dispatch any email. `/send` takes an
+> `If-Match: "<version>"` header plus a `{"groupId": "<uuid>"}` body (the
+> email-service correlation id minted by lfx-v2-ui's per-recipient fan-out),
+> validates the UUID, persists its canonical form on the newsletter row, and
+> returns the updated `Newsletter` with a fresh `ETag`. A send that resolves
+> zero recipients is rejected and leaves the draft actionable. Wiring up a real
+> email publisher (e.g. publishing to `lfx-v2-email-service` over NATS) is a
 > planned follow-up.
 >
 > AI content generation continues to live in `lfx-v2-ui`; this service does
