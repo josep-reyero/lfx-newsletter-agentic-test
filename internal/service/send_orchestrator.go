@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/mail"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -31,25 +32,29 @@ const defaultSendConcurrency = 5
 // transition. It owns the email-service integration; the UI no longer talks
 // to email-service directly.
 type SendOrchestrator struct {
-	repo           port.NewsletterRepository
-	committee      port.CommitteeClient
-	project        port.ProjectMetadataClient
-	email          port.EmailDispatcher
-	concurrency    int
-	fanoutEnabled  bool
+	repo             port.NewsletterRepository
+	committee        port.CommitteeClient
+	project          port.ProjectMetadataClient
+	email            port.EmailDispatcher
+	concurrency      int
+	fanoutEnabled    bool
+	publicAPIBaseURL string
 }
 
 // SendOrchestratorConfig configures a SendOrchestrator.
 type SendOrchestratorConfig struct {
-	Repo          port.NewsletterRepository
-	Committee     port.CommitteeClient
-	Project       port.ProjectMetadataClient
-	Email         port.EmailDispatcher
-	Concurrency   int
+	Repo        port.NewsletterRepository
+	Committee   port.CommitteeClient
+	Project     port.ProjectMetadataClient
+	Email       port.EmailDispatcher
+	Concurrency int
 	// FanoutEnabled is the feature toggle for the per-recipient send loop.
 	// Defaults to true; flip false in environments where we want to validate
 	// the recipient-resolution path without sending real mail.
 	FanoutEnabled bool
+	// PublicAPIBaseURL is the externally reachable base URL used to build the
+	// per-recipient open-tracking pixel. When empty, no pixel is injected.
+	PublicAPIBaseURL string
 }
 
 // NewSendOrchestrator wires a SendOrchestrator.
@@ -59,12 +64,13 @@ func NewSendOrchestrator(cfg SendOrchestratorConfig) *SendOrchestrator {
 		c = defaultSendConcurrency
 	}
 	return &SendOrchestrator{
-		repo:          cfg.Repo,
-		committee:     cfg.Committee,
-		project:       cfg.Project,
-		email:         cfg.Email,
-		concurrency:   c,
-		fanoutEnabled: cfg.FanoutEnabled,
+		repo:             cfg.Repo,
+		committee:        cfg.Committee,
+		project:          cfg.Project,
+		email:            cfg.Email,
+		concurrency:      c,
+		fanoutEnabled:    cfg.FanoutEnabled,
+		publicAPIBaseURL: strings.TrimRight(strings.TrimSpace(cfg.PublicAPIBaseURL), "/"),
 	}
 }
 
@@ -115,7 +121,7 @@ func (o *SendOrchestrator) SendNewsletter(ctx context.Context, in SendNewsletter
 		return nil, domain.ErrVersionMismatch
 	}
 
-	recipients, err := o.resolveRecipients(ctx, draft.CommitteeUIDs)
+	recipients, err := o.resolveRecipients(ctx, draft.ProjectUID, draft.CommitteeUIDs)
 	if err != nil {
 		return nil, fmt.Errorf("resolve recipients: %w", err)
 	}
@@ -138,7 +144,31 @@ func (o *SendOrchestrator) SendNewsletter(ctx context.Context, in SendNewsletter
 
 	groupID := uuid.NewString()
 
-	sent, failed, failures := o.fanOut(ctx, recipients, draft.Subject, htmlBody, textBody, groupID)
+	sent, failed, failures := o.fanOut(ctx, fanOutParams{
+		newsletterID: draft.ID,
+		projectUID:   draft.ProjectUID,
+		recipients:   recipients,
+		subject:      draft.Subject,
+		htmlBody:     htmlBody,
+		textBody:     textBody,
+		groupID:      groupID,
+	})
+
+	// Only flip the draft to `sent` when at least one recipient was delivered
+	// to. If every send failed (email-service unreachable, all recipients
+	// rejected, etc.) the row stays a draft so the operator can retry without
+	// emails ever having gone out. Without this gate, a fully-failed send is
+	// permanently indistinguishable from a successful one — no retry path.
+	if sent == 0 && len(recipients) > 0 {
+		slog.WarnContext(ctx, "newsletter send failed: no recipients delivered, leaving as draft",
+			"newsletter_id", draft.ID,
+			"project_uid", draft.ProjectUID,
+			"group_id", groupID,
+			"total_recipients", len(recipients),
+			"failed", failed,
+		)
+		return nil, fmt.Errorf("send failed: 0 of %d recipients delivered", len(recipients))
+	}
 
 	updated, markErr := o.repo.MarkSent(ctx, draft.ID, time.Now().UTC(), len(recipients), groupID, draft.Version)
 	if markErr != nil {
@@ -232,37 +262,59 @@ func (o *SendOrchestrator) TestSend(ctx context.Context, in TestSendInput) error
 	return nil
 }
 
-// RecipientCount resolves recipients and returns the unique count.
-func (o *SendOrchestrator) RecipientCount(ctx context.Context, committeeUIDs []string) (int, error) {
+// RecipientCount resolves recipients for the given project and returns the
+// unique count. The committee UIDs are caller-supplied; resolveRecipients binds
+// each one to projectUID before listing members.
+func (o *SendOrchestrator) RecipientCount(ctx context.Context, projectUID string, committeeUIDs []string) (int, error) {
+	if err := validateProjectUID(projectUID); err != nil {
+		return 0, err
+	}
 	if err := validateCommitteeUIDs(committeeUIDs); err != nil {
 		return 0, err
 	}
-	recipients, err := o.resolveRecipients(ctx, committeeUIDs)
+	recipients, err := o.resolveRecipients(ctx, projectUID, committeeUIDs)
 	if err != nil {
 		return 0, err
 	}
 	return len(recipients), nil
 }
 
-// Recipients resolves recipients and returns the unique list.
-func (o *SendOrchestrator) Recipients(ctx context.Context, committeeUIDs []string) ([]model.CommitteeMember, error) {
+// Recipients resolves recipients for the given project and returns the unique
+// list. Committee UIDs are caller-supplied and bound to projectUID first.
+func (o *SendOrchestrator) Recipients(ctx context.Context, projectUID string, committeeUIDs []string) ([]model.CommitteeMember, error) {
+	if err := validateProjectUID(projectUID); err != nil {
+		return nil, err
+	}
 	if err := validateCommitteeUIDs(committeeUIDs); err != nil {
 		return nil, err
 	}
-	return o.resolveRecipients(ctx, committeeUIDs)
+	return o.resolveRecipients(ctx, projectUID, committeeUIDs)
 }
 
 // resolveRecipients fans out to the committee client across committees, dedupes
 // by lowercased email, and filters obviously bad addresses. The errgroup cancels
 // in-flight goroutines as soon as one returns an error so a transient failure
 // from one committee doesn't keep the remaining lookups running.
-func (o *SendOrchestrator) resolveRecipients(ctx context.Context, committeeUIDs []string) ([]model.CommitteeMember, error) {
+//
+// Committee UIDs are caller-supplied data and the inbound gateway only authorizes
+// on `project:{projectUID}`. Before listing any members we therefore confirm each
+// committee belongs to projectUID; a mismatch is rejected as ErrForbidden so a
+// caller authorized for one project can't resolve or send to another project's
+// committee members.
+func (o *SendOrchestrator) resolveRecipients(ctx context.Context, projectUID string, committeeUIDs []string) ([]model.CommitteeMember, error) {
 	results := make([][]model.CommitteeMember, len(committeeUIDs))
 
 	g, gctx := errgroup.WithContext(ctx)
 	for i, uid := range committeeUIDs {
 		idx, committeeUID := i, uid
 		g.Go(func() error {
+			owner, err := o.committee.Project(gctx, committeeUID)
+			if err != nil {
+				return err
+			}
+			if owner != projectUID {
+				return fmt.Errorf("%w: committee %s does not belong to project %s", domain.ErrForbidden, committeeUID, projectUID)
+			}
 			members, err := o.committee.ListMembers(gctx, committeeUID)
 			if err != nil {
 				return err
@@ -296,39 +348,72 @@ func (o *SendOrchestrator) resolveRecipients(ctx context.Context, committeeUIDs 
 	return out, nil
 }
 
+// fanOutParams bundles the inputs to fanOut so the per-recipient send loop can
+// build recipient-specific HTML (open-tracking pixel) without a long argument
+// list.
+type fanOutParams struct {
+	newsletterID uuid.UUID
+	projectUID   string
+	recipients   []model.CommitteeMember
+	subject      string
+	htmlBody     string
+	textBody     string
+	groupID      string
+}
+
 // fanOut dispatches per-recipient send_email requests to email-service with
 // bounded concurrency. The fan-out never returns an error — per-recipient
 // failures are captured and surfaced in the result so the caller can decide
 // how to react. A nil EmailDispatcher (or FanoutEnabled=false) short-circuits
 // to "all sent, none failed" for dev/test environments.
-func (o *SendOrchestrator) fanOut(ctx context.Context, recipients []model.CommitteeMember, subject, htmlBody, textBody, groupID string) (sent, failed int, failures []SendFailure) {
-	if len(recipients) == 0 {
+//
+// When a public API base URL is configured, each recipient's HTML gets a
+// per-recipient open-tracking pixel appended before send so the local
+// newsletter_opens table and unique-open analytics are populated.
+func (o *SendOrchestrator) fanOut(ctx context.Context, p fanOutParams) (sent, failed int, failures []SendFailure) {
+	if len(p.recipients) == 0 {
 		return 0, 0, nil
 	}
 	if !o.fanoutEnabled {
 		slog.InfoContext(ctx, "send fanout disabled, marking all as sent without dispatch",
-			"total_recipients", len(recipients),
-			"group_id", groupID,
+			"total_recipients", len(p.recipients),
+			"group_id", p.groupID,
 		)
-		return len(recipients), 0, nil
+		return len(p.recipients), 0, nil
 	}
 
 	sem := make(chan struct{}, o.concurrency)
 	var mu sync.Mutex
 	var wg sync.WaitGroup
-	for _, r := range recipients {
+	for _, r := range p.recipients {
 		recipient := r
+		// Respect ctx cancellation when acquiring a worker slot. A naked
+		// `sem <- struct{}{}` would block forever (or until a slot frees) even
+		// after the caller cancelled — and then spin up a goroutine per
+		// remaining recipient that immediately fails into `failures` with the
+		// cancelled context. Selecting on ctx.Done() lets us bail early.
+		select {
+		case sem <- struct{}{}:
+		case <-ctx.Done():
+			mu.Lock()
+			failed++
+			failures = append(failures, SendFailure{Email: recipient.Email, Error: ctx.Err().Error()})
+			mu.Unlock()
+			continue
+		}
 		wg.Add(1)
-		sem <- struct{}{}
 		go func() {
 			defer wg.Done()
 			defer func() { <-sem }()
+			// Inject a recipient-specific open-tracking pixel so opens land in
+			// the local newsletter_opens table keyed by the recipient hash.
+			recipientHTML := o.injectOpenPixel(p.htmlBody, p.projectUID, p.newsletterID, recipient.Email)
 			_, err := o.email.SendEmail(ctx, port.SendEmailInput{
 				To:      recipient.Email,
-				Subject: subject,
-				HTML:    htmlBody,
-				Text:    textBody,
-				GroupID: groupID,
+				Subject: p.subject,
+				HTML:    recipientHTML,
+				Text:    p.textBody,
+				GroupID: p.groupID,
 			})
 			mu.Lock()
 			defer mu.Unlock()
@@ -337,7 +422,7 @@ func (o *SendOrchestrator) fanOut(ctx context.Context, recipients []model.Commit
 				failures = append(failures, SendFailure{Email: recipient.Email, Error: err.Error()})
 				slog.WarnContext(ctx, "send fanout: recipient failed",
 					"recipient", redactEmail(recipient.Email),
-					"group_id", groupID,
+					"group_id", p.groupID,
 					"error", err.Error(),
 				)
 				return
@@ -347,6 +432,45 @@ func (o *SendOrchestrator) fanOut(ctx context.Context, recipients []model.Commit
 	}
 	wg.Wait()
 	return sent, failed, failures
+}
+
+// injectOpenPixel appends a per-recipient open-tracking pixel to the rendered
+// HTML. The pixel points at
+// {base}/projects/{project_uid}/newsletter-opens/{newsletter_uid}?r=<hash>,
+// matching the unauthenticated OpenPixel handler route. The recipient hash is
+// the same SHA-256 token the open handler validates, so no raw email is ever
+// embedded in the URL.
+//
+// When no public base URL is configured, or the email is unhashable, the HTML is
+// returned unchanged — open analytics then come solely from email-service.
+func (o *SendOrchestrator) injectOpenPixel(htmlBody, projectUID string, newsletterID uuid.UUID, email string) string {
+	if o.publicAPIBaseURL == "" {
+		return htmlBody
+	}
+	hash := HashRecipient(email)
+	if hash == "" {
+		return htmlBody
+	}
+	pixelURL := fmt.Sprintf("%s/projects/%s/newsletter-opens/%s?r=%s",
+		o.publicAPIBaseURL,
+		url.PathEscape(projectUID),
+		newsletterID.String(),
+		url.QueryEscape(hash),
+	)
+	pixel := fmt.Sprintf(`<img src="%s" width="1" height="1" alt="" style="display:none" />`, pixelURL)
+	// Inject before </body> when present so the pixel sits inside the document;
+	// otherwise append. Case-insensitively match the closing tag.
+	if idx := lastIndexFold(htmlBody, "</body>"); idx >= 0 {
+		return htmlBody[:idx] + pixel + htmlBody[idx:]
+	}
+	return htmlBody + pixel
+}
+
+// lastIndexFold returns the index of the last case-insensitive occurrence of
+// substr in s, or -1 if absent. Used to locate the closing </body> tag without
+// allocating a fully lowercased copy on the hot path when the tag is missing.
+func lastIndexFold(s, substr string) int {
+	return strings.LastIndex(strings.ToLower(s), strings.ToLower(substr))
 }
 
 func fallbackString(value, fallback string) string {

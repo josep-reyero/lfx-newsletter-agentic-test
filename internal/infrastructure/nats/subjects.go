@@ -12,6 +12,12 @@ const (
 	// Response: JSON array of committee member records (email, first_name, ...).
 	CommitteeListMembersSubject = "lfx.committee-api.list_members"
 
+	// CommitteeGetProjectSubject resolves the project UID that owns a committee.
+	// Request payload: committee UID as raw bytes.
+	// Response: project UID as raw bytes. Used to verify a caller-supplied
+	// committee belongs to the authorized project before listing members.
+	CommitteeGetProjectSubject = "lfx.committee-api.get_project"
+
 	// ProjectGetNameSubject resolves a project's display name.
 	// Request payload: project UID as raw bytes.
 	// Response: project name as raw bytes.
@@ -24,7 +30,7 @@ const (
 
 	// Email-service NATS subjects. Imported as constants so the call sites
 	// don't drift from the email-service contract.
-	EmailServiceSendEmailSubject       = "lfx.email-service.send_email"
-	EmailServiceGetEmailStatusSubject  = "lfx.email-service.get_email_status"
-	EmailServiceGetEngagementSubject   = "lfx.email-service.get_email_engagement_analytics"
+	EmailServiceSendEmailSubject      = "lfx.email-service.send_email"
+	EmailServiceGetEmailStatusSubject = "lfx.email-service.get_email_status"
+	EmailServiceGetEngagementSubject  = "lfx.email-service.get_email_engagement_analytics"
 )

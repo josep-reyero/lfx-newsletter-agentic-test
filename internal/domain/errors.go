@@ -22,4 +22,9 @@ var (
 	// ErrAlreadySent indicates a draft has already been sent and cannot be re-sent
 	// or modified.
 	ErrAlreadySent = errors.New("newsletter already sent")
+
+	// ErrForbidden indicates the caller is authorized for the request's project
+	// but referenced a resource (e.g. a committee) that belongs to a different
+	// project and is therefore out of scope.
+	ErrForbidden = errors.New("forbidden")
 )

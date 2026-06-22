@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/linuxfoundation/lfx-v2-newsletter-service/internal/domain/model"
 	pkgerrors "github.com/linuxfoundation/lfx-v2-newsletter-service/pkg/errors"
@@ -61,4 +62,22 @@ func (c *CommitteeClient) ListMembers(ctx context.Context, committeeUID string) 
 		})
 	}
 	return out, nil
+}
+
+// Project resolves the project UID that owns a committee via the
+// `lfx.committee-api.get_project` subject. The reply is the project UID as raw
+// bytes. An empty reply means the committee is unknown to committee-service.
+func (c *CommitteeClient) Project(ctx context.Context, committeeUID string) (string, error) {
+	if committeeUID == "" {
+		return "", pkgerrors.NewValidation("committee_uid is required")
+	}
+	reply, err := c.client.Request(ctx, CommitteeGetProjectSubject, []byte(committeeUID))
+	if err != nil {
+		return "", err
+	}
+	projectUID := strings.TrimSpace(string(reply))
+	if projectUID == "" {
+		return "", pkgerrors.NewNotFound(fmt.Sprintf("committee not found: %s", committeeUID))
+	}
+	return projectUID, nil
 }

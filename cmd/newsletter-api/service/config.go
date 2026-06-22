@@ -44,6 +44,12 @@ type AppConfig struct {
 	// SendConcurrency caps in-flight per-recipient sends during fan-out.
 	SendConcurrency int
 
+	// PublicAPIBaseURL is the externally reachable base URL of this service
+	// (e.g. https://api.lfx.dev), used to build the per-recipient open-tracking
+	// pixel URL injected into outbound newsletter HTML. When empty, open-tracking
+	// pixels are omitted (engagement still comes from email-service).
+	PublicAPIBaseURL string
+
 	// Auth
 	JWKSURL          string
 	ExpectedAudience string
@@ -75,6 +81,7 @@ func AppConfigFromEnv() (AppConfig, error) {
 		NATSReconnectWait: durationOr("NATS_RECONNECT_WAIT", time.Duration(defaultNATSReconnectWaitSecs)*time.Second),
 		SendFanoutEnabled: boolOr("SEND_FANOUT_ENABLED", true),
 		SendConcurrency:   intOr("SEND_CONCURRENCY", defaultSendConcurrency),
+		PublicAPIBaseURL:  strings.TrimRight(strings.TrimSpace(os.Getenv("PUBLIC_API_BASE_URL")), "/"),
 		JWKSURL:           os.Getenv("JWKS_URL"),
 		ExpectedAudience:  os.Getenv("JWT_AUDIENCE"),
 		RequireUserAuth:   boolOr("REQUIRE_USER_AUTH", true),

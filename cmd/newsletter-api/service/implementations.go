@@ -100,12 +100,13 @@ func InitInfrastructure(ctx context.Context, cfg AppConfig) error {
 	repo := repository.NewPostgresNewsletterRepo(bunDB)
 	newsletterSvc := service.NewNewsletterService(repo)
 	sendSvc := service.NewSendOrchestrator(service.SendOrchestratorConfig{
-		Repo:          repo,
-		Committee:     committeeClient,
-		Project:       projectClient,
-		Email:         emailDispatcher,
-		Concurrency:   cfg.SendConcurrency,
-		FanoutEnabled: cfg.SendFanoutEnabled,
+		Repo:             repo,
+		Committee:        committeeClient,
+		Project:          projectClient,
+		Email:            emailDispatcher,
+		Concurrency:      cfg.SendConcurrency,
+		FanoutEnabled:    cfg.SendFanoutEnabled,
+		PublicAPIBaseURL: cfg.PublicAPIBaseURL,
 	})
 	analyticsSvc := service.NewAnalyticsService(repo, emailDispatcher)
 

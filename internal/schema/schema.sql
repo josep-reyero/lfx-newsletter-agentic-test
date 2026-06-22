@@ -20,23 +20,48 @@ CREATE TABLE IF NOT EXISTS newsletters (
 );
 
 -- Forward-compatibility shim for environments that ran the previous schema
--- (foundation/project context, no project_uid). Drops the now-defunct context
--- columns and renames context_uid → project_uid in place so existing rows survive.
--- Safe to run on a fresh DB because the columns won't exist.
+-- (foundation/project context, no project_uid). Renames context_uid →
+-- project_uid in place and drops the now-defunct context_type discriminator so
+-- existing rows survive. Safe to run on a fresh DB because the columns won't
+-- exist.
+--
+-- The old context_type discriminated 'foundation' vs 'project' scope. Blindly
+-- dropping it would silently reinterpret any 'foundation' (or other non-project)
+-- row as a project-scoped row whose project_uid is actually a foundation UID —
+-- corrupting its scope and surfacing it under a nonsensical project path. We
+-- therefore refuse to drop the discriminator while non-project rows still exist:
+-- an operator must migrate or remove them deliberately first. This makes the
+-- migration safe to run unattended during a rolling deploy.
 DO $$
+DECLARE
+    stray_count BIGINT;
 BEGIN
     IF EXISTS (
         SELECT 1 FROM information_schema.columns
         WHERE table_name = 'newsletters' AND column_name = 'context_type'
     ) THEN
-        ALTER TABLE newsletters DROP CONSTRAINT IF EXISTS newsletters_context_type_check;
-        ALTER TABLE newsletters DROP COLUMN context_type;
+        EXECUTE 'SELECT count(*) FROM newsletters WHERE context_type IS DISTINCT FROM ''project'''
+            INTO stray_count;
+        IF stray_count > 0 THEN
+            RAISE EXCEPTION
+                'newsletters migration aborted: % row(s) have context_type <> ''project''. '
+                'Backfill a real project_uid (currently holding a foundation UID) and set '
+                'context_type=''project'', or delete these rows, then re-run the migration.',
+                stray_count;
+        END IF;
     END IF;
     IF EXISTS (
         SELECT 1 FROM information_schema.columns
         WHERE table_name = 'newsletters' AND column_name = 'context_uid'
     ) THEN
         ALTER TABLE newsletters RENAME COLUMN context_uid TO project_uid;
+    END IF;
+    IF EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_name = 'newsletters' AND column_name = 'context_type'
+    ) THEN
+        ALTER TABLE newsletters DROP CONSTRAINT IF EXISTS newsletters_context_type_check;
+        ALTER TABLE newsletters DROP COLUMN context_type;
     END IF;
 END$$;
 

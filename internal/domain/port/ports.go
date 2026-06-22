@@ -54,11 +54,17 @@ type NewsletterRepository interface {
 // CommitteeClient resolves committee members for newsletter recipient calculation.
 //
 // The concrete implementation talks to lfx-v2-committee-service via the
-// `lfx.committee-api.list_members` NATS subject. No auth context flows through
-// — NATS is network-isolated and authorization is enforced at the inbound
-// gateway before the request ever reaches newsletter-service.
+// `lfx.committee-api.list_members` NATS subject. The inbound gateway authorizes
+// the request on `project:{project_uid}`, but a committee UID is caller-supplied
+// data — so before listing members the orchestrator must confirm the committee
+// belongs to the authorized project. Project resolves a committee's owning
+// project UID via `lfx.committee-api.get_project` for exactly that check.
 type CommitteeClient interface {
 	ListMembers(ctx context.Context, committeeUID string) ([]model.CommitteeMember, error)
+	// Project returns the project UID that owns the committee. Used to verify a
+	// caller-supplied committee UID is in-scope for the authorized project
+	// before any member PII is resolved.
+	Project(ctx context.Context, committeeUID string) (string, error)
 }
 
 // ProjectMetadataClient resolves the project name and slug used for email
@@ -74,36 +80,36 @@ type ProjectMetadataClient interface {
 
 // SendEmailInput is one per-recipient send envelope dispatched to email-service.
 type SendEmailInput struct {
-	To       string
-	Subject  string
-	HTML     string
-	Text     string
-	GroupID  string
+	To      string
+	Subject string
+	HTML    string
+	Text    string
+	GroupID string
 }
 
 // EmailRecipientRecord mirrors lfx-v2-email-service's per-recipient state, used
 // when aggregating analytics. Fields are kept loose because newsletter-service
 // only reads a subset.
 type EmailRecipientRecord struct {
-	EmailID     string
-	GroupID     string
-	To          string
-	SentAt      *time.Time
-	Delivered   bool
-	Opened      bool
-	OpenCount   int
-	LastOpened  *time.Time
-	Failed      bool
+	EmailID    string
+	GroupID    string
+	To         string
+	SentAt     *time.Time
+	Delivered  bool
+	Opened     bool
+	OpenCount  int
+	LastOpened *time.Time
+	Failed     bool
 }
 
 // EmailEngagement is the per-group rollup returned by email-service.
 type EmailEngagement struct {
-	GroupID    string
-	TotalSent  int
-	Delivered  int
-	Opened     int
+	GroupID     string
+	TotalSent   int
+	Delivered   int
+	Opened      int
 	UniqueOpens int
-	Failed     int
+	Failed      int
 }
 
 // EmailDispatcher fans out individual emails to lfx-v2-email-service and
