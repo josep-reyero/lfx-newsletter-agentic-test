@@ -186,13 +186,14 @@ func (r *PostgresNewsletterRepo) Delete(ctx context.Context, id uuid.UUID) error
 	return nil
 }
 
-// MarkSent transitions a draft to status=sent atomically, gated on the expected
-// version. Captures the audience size and the lfx-v2-email-service group_id
-// at send time so analytics can compute open rates without re-resolving
-// committee membership and can locate the per-recipient engagement records.
+// MarkSent transitions a draft to status=sent atomically. When expectedVersion
+// is non-zero, the transition is also gated on that optimistic-locking version.
+// Captures the audience size and the lfx-v2-email-service group_id at send time
+// so analytics can compute open rates without re-resolving committee membership
+// and can locate the per-recipient engagement records.
 func (r *PostgresNewsletterRepo) MarkSent(ctx context.Context, id uuid.UUID, sentAt time.Time, totalRecipients int, groupID string, expectedVersion int64) (*model.Newsletter, error) {
 	updated := &model.Newsletter{}
-	res, err := r.db.NewUpdate().
+	query := r.db.NewUpdate().
 		Model(updated).
 		Set("status = ?", model.StatusSent).
 		Set("sent_at = ?", sentAt).
@@ -200,9 +201,11 @@ func (r *PostgresNewsletterRepo) MarkSent(ctx context.Context, id uuid.UUID, sen
 		Set("group_id = ?", groupID).
 		Set("updated_at = now()").
 		Set("version = version + 1").
-		Where("id = ? AND version = ? AND status = ?", id, expectedVersion, model.StatusDraft).
-		Returning("*").
-		Exec(ctx)
+		Where("id = ? AND status = ?", id, model.StatusDraft)
+	if expectedVersion != 0 {
+		query = query.Where("version = ?", expectedVersion)
+	}
+	res, err := query.Returning("*").Exec(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("mark sent: %w", err)
 	}
@@ -339,7 +342,7 @@ func (r *PostgresNewsletterRepo) classifyMarkSentMiss(ctx context.Context, id uu
 	if existing.Status == model.StatusSent {
 		return domain.ErrAlreadySent
 	}
-	if existing.Version != expectedVersion {
+	if expectedVersion != 0 && existing.Version != expectedVersion {
 		return domain.ErrVersionMismatch
 	}
 	// Unreachable in practice — fall back to version mismatch.

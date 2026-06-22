@@ -36,8 +36,8 @@ type committeeMemberDTO struct {
 	FirstName string `json:"first_name"`
 }
 
-// ListMembers fetches all members of a single committee. An empty reply (or
-// a JSON empty array) returns an empty slice, not an error.
+// ListMembers fetches all members of a single committee. A zero-byte reply is
+// treated as not found; a JSON empty array is a known committee with no members.
 func (c *CommitteeClient) ListMembers(ctx context.Context, committeeUID string) ([]model.CommitteeMember, error) {
 	if committeeUID == "" {
 		return nil, pkgerrors.NewValidation("committee_uid is required")

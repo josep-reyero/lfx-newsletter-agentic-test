@@ -159,7 +159,11 @@ func (o *SendOrchestrator) SendNewsletter(ctx context.Context, in SendNewsletter
 		return nil, pkgerrors.NewServiceUnavailable("email dispatch failed for every recipient")
 	}
 
-	updated, markErr := o.repo.MarkSent(ctx, draft.ID, time.Now().UTC(), len(recipients), groupID, draft.Version)
+	// Dispatch is irreversible once fanOut returns with at least one success.
+	// The caller's optimistic-locking preflight happened before fan-out; from
+	// here, status=draft is the only safe DB gate so a concurrent draft edit
+	// cannot leave already-sent email retryable.
+	updated, markErr := o.repo.MarkSent(ctx, draft.ID, time.Now().UTC(), len(recipients), groupID, 0)
 	if markErr != nil {
 		return nil, fmt.Errorf("mark sent: %w", markErr)
 	}

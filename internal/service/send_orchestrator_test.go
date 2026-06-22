@@ -17,8 +17,10 @@ import (
 )
 
 type sendRepoFake struct {
-	newsletter    *model.Newsletter
-	markSentCalls int
+	newsletter              *model.Newsletter
+	markSentCalls           int
+	markSentExpectedVersion int64
+	markSentTotalRecipients int
 }
 
 func (f *sendRepoFake) Create(context.Context, *model.Newsletter) error { return nil }
@@ -33,8 +35,10 @@ func (f *sendRepoFake) Update(context.Context, *model.Newsletter, int64) (*model
 	return nil, nil
 }
 func (f *sendRepoFake) Delete(context.Context, uuid.UUID) error { return nil }
-func (f *sendRepoFake) MarkSent(context.Context, uuid.UUID, time.Time, int, string, int64) (*model.Newsletter, error) {
+func (f *sendRepoFake) MarkSent(_ context.Context, _ uuid.UUID, _ time.Time, totalRecipients int, _ string, expectedVersion int64) (*model.Newsletter, error) {
 	f.markSentCalls++
+	f.markSentTotalRecipients = totalRecipients
+	f.markSentExpectedVersion = expectedVersion
 	return f.newsletter, nil
 }
 func (f *sendRepoFake) RecordOpen(context.Context, uuid.UUID, string) error { return nil }
@@ -169,5 +173,56 @@ func TestSendNewsletter_NoResolvedRecipientsDoesNotMarkSent(t *testing.T) {
 	}
 	if email.sends != 0 {
 		t.Fatalf("email sends: got %d, want 0", email.sends)
+	}
+}
+
+func TestSendNewsletter_MarkSentSkipsVersionGateAfterFanout(t *testing.T) {
+	projectUID := "63f32fa9-b1be-4b1a-9a1f-98fb2dd34870"
+	newsletterID := uuid.New()
+	repo := &sendRepoFake{
+		newsletter: &model.Newsletter{
+			ID:            newsletterID,
+			ProjectUID:    projectUID,
+			Subject:       "Quarterly update",
+			BodyHTML:      "<p>Hello</p>",
+			EDReplyEmail:  "ed@example.org",
+			CommitteeUIDs: []string{"committee-1"},
+			Status:        model.StatusDraft,
+			Version:       7,
+		},
+	}
+	email := &sendEmailFake{}
+	orchestrator := NewSendOrchestrator(SendOrchestratorConfig{
+		Repo:          repo,
+		Committee:     sendCommitteeFake{members: []model.CommitteeMember{{Email: "a@example.org"}}},
+		Project:       sendProjectFake{},
+		Email:         email,
+		Concurrency:   2,
+		FanoutEnabled: true,
+	})
+
+	got, err := orchestrator.SendNewsletter(context.Background(), SendNewsletterInput{
+		ProjectUID:      projectUID,
+		NewsletterID:    newsletterID,
+		ExpectedVersion: 7,
+		EDName:          "Executive Director",
+	})
+	if err != nil {
+		t.Fatalf("SendNewsletter returned error: %v", err)
+	}
+	if got == nil {
+		t.Fatal("SendNewsletter result is nil")
+	}
+	if email.sends != 1 {
+		t.Fatalf("email sends: got %d, want 1", email.sends)
+	}
+	if repo.markSentCalls != 1 {
+		t.Fatalf("MarkSent calls: got %d, want 1", repo.markSentCalls)
+	}
+	if repo.markSentExpectedVersion != 0 {
+		t.Fatalf("MarkSent expectedVersion: got %d, want 0", repo.markSentExpectedVersion)
+	}
+	if repo.markSentTotalRecipients != 1 {
+		t.Fatalf("MarkSent totalRecipients: got %d, want 1", repo.markSentTotalRecipients)
 	}
 }
