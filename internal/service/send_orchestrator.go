@@ -27,11 +27,24 @@ const defaultSendConcurrency = 5
 // defaultFromAddress is the SMTP envelope From used when the orchestrator is
 // constructed without an explicit FromAddress (e.g. tests). Production wiring
 // always sets one through SendOrchestratorConfig.
-const defaultFromAddress = "newsletter@linuxfoundation.org"
+const defaultFromAddress = "newsletter@lfx.linuxfoundation.org"
 
 // fromDisplayNameSuffix is appended to the project name to build the From
 // display name, yielding e.g. "Kubernetes Newsletter".
 const fromDisplayNameSuffix = " Newsletter"
+
+// resolveProjectName returns the trimmed project display name for the given
+// project UID, falling back to "Project" when metadata is unavailable or the
+// resolved name is blank. Trimming avoids leading/trailing whitespace leaking
+// into the From display name (e.g. "  Kubernetes  Newsletter").
+func (o *SendOrchestrator) resolveProjectName(ctx context.Context, projectUID string) string {
+	name, _ := o.project.Name(ctx, projectUID)
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return "Project"
+	}
+	return name
+}
 
 // SendOrchestrator coordinates recipient resolution, email-chrome rendering,
 // per-recipient fan-out to lfx-v2-email-service, and the draft → sent state
@@ -139,10 +152,7 @@ func (o *SendOrchestrator) SendNewsletter(ctx context.Context, in SendNewsletter
 		return nil, fmt.Errorf("resolve recipients: %w", err)
 	}
 
-	projectName, _ := o.project.Name(ctx, draft.ProjectUID)
-	if projectName == "" {
-		projectName = "Project"
-	}
+	projectName := o.resolveProjectName(ctx, draft.ProjectUID)
 	fromDisplayName := projectName + fromDisplayNameSuffix
 
 	chrome := render.Chrome{
@@ -243,10 +253,7 @@ func (o *SendOrchestrator) TestSend(ctx context.Context, in TestSendInput) error
 		return fmt.Errorf("%w: to_email is not a valid email: %v", domain.ErrInvalidRequest, err)
 	}
 
-	projectName, _ := o.project.Name(ctx, in.ProjectUID)
-	if projectName == "" {
-		projectName = "Project"
-	}
+	projectName := o.resolveProjectName(ctx, in.ProjectUID)
 	fromDisplayName := projectName + fromDisplayNameSuffix
 
 	chrome := render.Chrome{

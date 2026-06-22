@@ -460,3 +460,35 @@ func TestTestSendPopulatesEnvelope(t *testing.T) {
 		})
 	}
 }
+
+// nameProjectClient returns a fixed project name, letting tests exercise
+// resolveProjectName trimming and fallback behavior.
+type nameProjectClient struct{ name string }
+
+func (f *nameProjectClient) Name(_ context.Context, _ string) (string, error) {
+	return f.name, nil
+}
+func (f *nameProjectClient) Slug(_ context.Context, _ string) (string, error) {
+	return "slug", nil
+}
+
+func TestResolveProjectName(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"plain", "Kubernetes", "Kubernetes"},
+		{"trims surrounding whitespace", "  Kubernetes  ", "Kubernetes"},
+		{"blank falls back", "", "Project"},
+		{"whitespace-only falls back", "   ", "Project"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			o := &SendOrchestrator{project: &nameProjectClient{name: tc.in}}
+			if got := o.resolveProjectName(context.Background(), "uid"); got != tc.want {
+				t.Errorf("resolveProjectName(%q) = %q, want %q", tc.in, got, tc.want)
+			}
+		})
+	}
+}

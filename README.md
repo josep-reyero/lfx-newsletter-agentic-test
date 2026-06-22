@@ -9,13 +9,16 @@ the draft → sent state transition.
 - Resolve recipient lists from committees (read-only HTTP calls to the LFX v2
   query service).
 - Expose an HTTP REST API consumed by the lfx-v2-ui Express server.
+- Dispatch newsletter email per recipient to `lfx-v2-email-service` over NATS,
+  threading a configurable envelope From address, a project-derived From display
+  name, and the Executive Director Reply-To.
 
-> **Out of scope right now:** actual email delivery. `/newsletters/test-send`
-> and `/newsletters/drafts/{id}/send` validate inputs, resolve recipient counts,
-> and (for `/send`) flip the draft to `status=sent` in the database — but they
-> do **not** dispatch any email. Wiring up a real email publisher
-> (e.g. publishing to `lfx-v2-email-service` over NATS) is a planned follow-up.
-> AI content generation continues to live in lfx-v2-ui.
+> **Email delivery:** `/newsletters/test-send` and
+> `/newsletters/drafts/{id}/send` validate inputs, resolve recipients, render
+> the email chrome, and fan out a per-recipient `send_email` request to
+> `lfx-v2-email-service` over NATS. `/send` flips the draft to `status=sent` in
+> the database after dispatch. AI content generation continues to live in
+> lfx-v2-ui.
 
 ## Quick Start
 
