@@ -198,9 +198,13 @@ func (r *PostgresNewsletterRepo) Delete(ctx context.Context, id uuid.UUID) error
 //
 // The row stays in status=draft (so it remains retryable until MarkSent
 // finalizes it), but its version advances. The method returns the durable
-// group_id and the post-claim version the caller must pass to MarkSent. If the
-// draft already carries a group_id (a prior attempt that didn't finalize), that
-// existing group and the current version are returned so the retry reuses them.
+// group_id and the post-claim version the caller must pass to MarkSent.
+//
+// Reuse vs. concurrency: a group_id is only reused when the caller's
+// expectedVersion still matches the row's CURRENT version — i.e. the *same*
+// caller retrying its own claimed-but-unfinished send. A different caller that
+// lost the claim race holds a stale version and gets ErrVersionMismatch, so it
+// never enters fan-out under the winner's group.
 func (r *PostgresNewsletterRepo) PersistSendIntent(ctx context.Context, id uuid.UUID, groupID string, expectedVersion int64) (string, int64, error) {
 	existing := &model.Newsletter{}
 	if err := r.db.NewSelect().
@@ -238,16 +242,22 @@ func (r *PostgresNewsletterRepo) PersistSendIntent(ctx context.Context, id uuid.
 		return "", 0, fmt.Errorf("persist send intent: %w", err)
 	}
 	if n, _ := res.RowsAffected(); n == 0 {
-		// Lost the claim race: re-read and reuse whatever is now durable.
+		// Lost the claim race: another caller claimed the row between our load and
+		// update (it bumped the version and/or set group_id). This caller is a
+		// loser and MUST NOT proceed to fan-out — returning the winner's group_id
+		// would let both callers dispatch the full batch. Re-read only to classify
+		// the failure precisely; never return a reusable group here.
 		if err := r.db.NewSelect().Model(existing).Where("id = ?", id).Scan(ctx); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return "", 0, domain.ErrNotFound
+			}
 			return "", 0, fmt.Errorf("persist send intent: reload: %w", err)
 		}
 		if existing.Status == model.StatusSent {
 			return "", 0, domain.ErrAlreadySent
 		}
-		if existing.GroupID != nil && *existing.GroupID != "" {
-			return *existing.GroupID, existing.Version, nil
-		}
+		// The row was claimed concurrently (version advanced) — fail the optimistic
+		// lock so only the winner sends.
 		return "", 0, domain.ErrVersionMismatch
 	}
 	return groupID, claimed.Version, nil

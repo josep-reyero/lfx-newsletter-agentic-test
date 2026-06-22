@@ -5,7 +5,6 @@ package handler
 
 import (
 	"net/http"
-	"strings"
 
 	"github.com/linuxfoundation/lfx-v2-newsletter-service/internal/service"
 	publicapi "github.com/linuxfoundation/lfx-v2-newsletter-service/pkg/api"
@@ -106,13 +105,16 @@ func (h *Handler) TestSend(w http.ResponseWriter, r *http.Request) {
 	writeJSON(r.Context(), w, http.StatusOK, publicapi.TestSendResponse{OK: true})
 }
 
-// resolveEDName resolves the executive director display name from request
-// metadata. Prefers the X-User-Name header (set by an upstream proxy when
-// available) and falls back to the JWT principal.
+// resolveEDName resolves the executive director display name used in the
+// recipient-facing compliance footer.
+//
+// It is sourced ONLY from the validated JWT principal (UserFromContext), never
+// from a caller-supplied header. The previous X-User-Name preference was
+// spoofable: nothing in this service or the chart guarantees the gateway strips
+// and re-mints that header, so an authenticated writer could forge the sender
+// display name on real newsletter mail. Until that ingress contract is enforced
+// the header is ignored.
 func resolveEDName(r *http.Request) string {
-	if name := strings.TrimSpace(r.Header.Get("X-User-Name")); name != "" {
-		return name
-	}
 	if user := UserFromContext(r.Context()); user != "" {
 		return user
 	}
