@@ -21,15 +21,21 @@ func TestUnsubscribeTokenRoundTrip(t *testing.T) {
 	}
 	token := url[strings.Index(url, "?t=")+3:]
 
-	gotProject, gotEmail, err := svc.VerifyToken(token)
+	gotProject, gotHash, err := svc.VerifyToken(token)
 	if err != nil {
 		t.Fatalf("verify: %v", err)
 	}
 	if gotProject != "proj-1" {
 		t.Errorf("project = %q, want proj-1", gotProject)
 	}
-	if gotEmail != "alice@example.com" {
-		t.Errorf("email = %q, want lowercased alice@example.com", gotEmail)
+	// The token carries the recipient hash, not the raw address. Verify it
+	// matches HashRecipient of the lowercased email and never leaks plaintext.
+	wantHash := HashRecipient("alice@example.com")
+	if gotHash != wantHash {
+		t.Errorf("hash = %q, want %q", gotHash, wantHash)
+	}
+	if strings.Contains(token, "example.com") {
+		t.Errorf("token must not contain the raw email domain: %s", token)
 	}
 }
 

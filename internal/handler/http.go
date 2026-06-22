@@ -113,8 +113,12 @@ func (h *Handler) Routes() http.Handler {
 
 	// One-click unsubscribe — intentionally unauthenticated; requested by a
 	// recipient clicking the footer link. Authorization comes from the
-	// HMAC-signed token in the query string.
-	mux.HandleFunc("GET /newsletters/unsubscribe", h.Unsubscribe)
+	// HMAC-signed token in the query string. GET is non-mutating: it renders a
+	// confirmation page with a one-click POST form so mail-client link previews
+	// and security scanners cannot opt a recipient out by merely fetching the
+	// URL. The actual opt-out is recorded only on POST.
+	mux.HandleFunc("GET /newsletters/unsubscribe", h.UnsubscribeConfirm)
+	mux.HandleFunc("POST /newsletters/unsubscribe", h.Unsubscribe)
 
 	// Outermost middleware first: request ID so it appears on every log line,
 	// then request log so it captures status + duration.

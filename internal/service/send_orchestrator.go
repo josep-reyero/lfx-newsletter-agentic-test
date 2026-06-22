@@ -142,6 +142,20 @@ func (o *SendOrchestrator) SendNewsletter(ctx context.Context, in SendNewsletter
 
 	groupID := uuid.NewString()
 
+	// An empty recipient list after unsubscribe filtering is a no-op, not a
+	// successful send. resolveRecipients excludes opted-out addresses, so a
+	// committee lookup that succeeds can still leave zero eligible recipients
+	// (e.g. everyone unsubscribed). Marking the draft sent with
+	// total_recipients=0 would strand it: it can never be retried as a draft
+	// even though nothing was delivered. Leave it actionable instead.
+	if len(recipients) == 0 {
+		slog.WarnContext(ctx, "newsletter send skipped: no eligible recipients after unsubscribe filtering, leaving as draft",
+			"newsletter_id", draft.ID,
+			"project_uid", draft.ProjectUID,
+		)
+		return nil, fmt.Errorf("%w: no eligible recipients to send to", domain.ErrInvalidRequest)
+	}
+
 	sent, failed, failures := o.fanOut(ctx, draft.ProjectUID, recipients, draft.Subject, htmlBody, textBody, groupID)
 
 	// Only flip the draft to `sent` when at least one recipient was delivered
@@ -149,7 +163,7 @@ func (o *SendOrchestrator) SendNewsletter(ctx context.Context, in SendNewsletter
 	// rejected, etc.) the row stays a draft so the operator can retry without
 	// emails ever having gone out. Without this gate, a fully-failed send is
 	// permanently indistinguishable from a successful one — no retry path.
-	if sent == 0 && len(recipients) > 0 {
+	if sent == 0 {
 		slog.WarnContext(ctx, "newsletter send failed: no recipients delivered, leaving as draft",
 			"newsletter_id", draft.ID,
 			"project_uid", draft.ProjectUID,
@@ -314,7 +328,7 @@ func (o *SendOrchestrator) resolveRecipients(ctx context.Context, projectUID str
 				continue
 			}
 			seen[email] = struct{}{}
-			if _, unsub := excluded[email]; unsub {
+			if _, unsub := excluded[HashRecipient(email)]; unsub {
 				skipped++
 				continue
 			}
@@ -334,13 +348,14 @@ func (o *SendOrchestrator) resolveRecipients(ctx context.Context, projectUID str
 	return out, nil
 }
 
-// listUnsubscribed returns the set of unsubscribed emails for the project, or
-// an empty set when no unsubscribe service is wired (tests, legacy config).
+// listUnsubscribed returns the set of unsubscribed recipient hashes for the
+// project, or an empty set when no unsubscribe service is wired (tests, legacy
+// config). Callers compare HashRecipient(email) against this set.
 func (o *SendOrchestrator) listUnsubscribed(ctx context.Context, projectUID string) (map[string]struct{}, error) {
 	if o.unsub == nil || o.unsub.repo == nil {
 		return map[string]struct{}{}, nil
 	}
-	return o.unsub.repo.ListUnsubscribedEmails(ctx, projectUID)
+	return o.unsub.repo.ListUnsubscribedHashes(ctx, projectUID)
 }
 
 // fanOut dispatches per-recipient send_email requests to email-service with

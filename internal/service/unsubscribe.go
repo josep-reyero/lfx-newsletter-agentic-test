@@ -57,26 +57,28 @@ func (s *UnsubscribeService) Enabled() bool {
 }
 
 // BuildURL returns the per-recipient unsubscribe link for the given project
-// and email address.
+// and email address. The email is hashed into the token; the raw address never
+// leaves this process and is never embedded in the URL.
 func (s *UnsubscribeService) BuildURL(projectUID, email string) string {
 	return s.baseURL + unsubscribePath + "?t=" + url.QueryEscape(s.buildToken(projectUID, email))
 }
 
-// buildToken returns base64url(projectUID + "\n" + email + "\n" + hexMAC).
-// Newline is the field separator because it cannot appear in a project UID
-// or an email address.
+// buildToken returns base64url(projectUID + "\n" + recipientHash + "\n" + hexMAC).
+// The recipient hash (SHA-256 of the lowercased email) is used in place of the
+// raw address so the link carries no PII. Newline is the field separator; it
+// cannot appear in a project UID or a hex hash.
 func (s *UnsubscribeService) buildToken(projectUID, email string) string {
-	email = strings.ToLower(strings.TrimSpace(email))
-	payload := projectUID + "\n" + email
+	recipientHash := HashRecipient(email)
+	payload := projectUID + "\n" + recipientHash
 	mac := s.sign(payload)
 	return base64.RawURLEncoding.EncodeToString([]byte(payload + "\n" + mac))
 }
 
-// VerifyToken decodes and authenticates an unsubscribe token. Returns
-// domain.ErrInvalidRequest on any decode failure or signature mismatch so
-// the handler can surface a single "invalid link" response without leaking
-// which step failed.
-func (s *UnsubscribeService) VerifyToken(token string) (projectUID, email string, err error) {
+// VerifyToken decodes and authenticates an unsubscribe token. Returns the
+// project UID and recipient hash. Returns domain.ErrInvalidRequest on any
+// decode failure or signature mismatch so the handler can surface a single
+// "invalid link" response without leaking which step failed.
+func (s *UnsubscribeService) VerifyToken(token string) (projectUID, recipientHash string, err error) {
 	if len(s.secret) == 0 {
 		return "", "", fmt.Errorf("%w: unsubscribe is not configured", domain.ErrInvalidRequest)
 	}
@@ -88,32 +90,32 @@ func (s *UnsubscribeService) VerifyToken(token string) (projectUID, email string
 	if len(parts) != 3 {
 		return "", "", fmt.Errorf("%w: malformed token", domain.ErrInvalidRequest)
 	}
-	projectUID, email, gotMAC := parts[0], parts[1], parts[2]
-	if projectUID == "" || email == "" {
+	projectUID, recipientHash, gotMAC := parts[0], parts[1], parts[2]
+	if projectUID == "" || recipientHash == "" {
 		return "", "", fmt.Errorf("%w: malformed token", domain.ErrInvalidRequest)
 	}
-	wantMAC := s.sign(projectUID + "\n" + email)
+	wantMAC := s.sign(projectUID + "\n" + recipientHash)
 	if !hmac.Equal([]byte(gotMAC), []byte(wantMAC)) {
 		return "", "", fmt.Errorf("%w: invalid signature", domain.ErrInvalidRequest)
 	}
-	return projectUID, email, nil
+	return projectUID, recipientHash, nil
 }
 
-// Unsubscribe verifies the token and records the opt-out. Returns the
-// decoded project UID and email so the handler can render a confirmation.
-func (s *UnsubscribeService) Unsubscribe(ctx context.Context, token string) (projectUID, email string, err error) {
-	projectUID, email, err = s.VerifyToken(token)
+// Unsubscribe verifies the token and records the opt-out keyed by recipient
+// hash. Returns the decoded project UID so the handler can render a generic
+// confirmation page. The raw email is never recovered or echoed.
+func (s *UnsubscribeService) Unsubscribe(ctx context.Context, token string) (projectUID string, err error) {
+	projectUID, recipientHash, err := s.VerifyToken(token)
 	if err != nil {
-		return "", "", err
+		return "", err
 	}
-	if err := s.repo.CreateUnsubscribe(ctx, projectUID, email); err != nil {
-		return "", "", err
+	if err := s.repo.CreateUnsubscribe(ctx, projectUID, recipientHash); err != nil {
+		return "", err
 	}
 	slog.InfoContext(ctx, "newsletter unsubscribe recorded",
 		"project_uid", projectUID,
-		"email", redactEmail(email),
 	)
-	return projectUID, email, nil
+	return projectUID, nil
 }
 
 func (s *UnsubscribeService) sign(payload string) string {
