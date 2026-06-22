@@ -183,6 +183,9 @@ serviceAccount:
 networkPolicy:
   enabled: true
   natsPort: 4222
+  # natsNamespace restricts NATS egress to the namespace hosting the broker.
+  # Set to "" to omit the selector for local/non-standard topologies.
+  natsNamespace: lfx
   otelGRPCPort: 4317
   otelHTTPPort: 4318
   postgresPort: 5432

@@ -42,11 +42,21 @@ spec:
           protocol: TCP
     # NATS request/reply — upstream calls to committee-service, project-service,
     # and email-service. This is the primary service-to-service transport.
+    {{- if .Values.networkPolicy.natsNamespace }}
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Values.networkPolicy.natsNamespace | quote }}
+      ports:
+        - port: {{ .Values.networkPolicy.natsPort }}
+          protocol: TCP
+    {{- else }}
     - ports:
         - port: {{ .Values.networkPolicy.natsPort }}
           protocol: TCP
-    # External HTTPS — JWKS endpoint for OIDC verification and any third-party
-    # HTTPS upstream. Service-to-service calls go via NATS, not HTTPS.
+    {{- end }}
+    # External HTTP/HTTPS — JWKS endpoint for OIDC verification and any
+    # third-party upstream. Service-to-service calls go via NATS, not HTTP.
     - ports:
         - port: 80
           protocol: TCP
