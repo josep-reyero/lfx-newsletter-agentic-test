@@ -244,6 +244,34 @@ func TestFanOutInjectsPerRecipientUnsubscribeURL(t *testing.T) {
 	}
 }
 
+func TestFanOutEscapesPerRecipientUnsubscribeURLInHTML(t *testing.T) {
+	repo := newFakeRepo()
+	committee := &fakeCommitteeClient{members: map[string][]model.CommitteeMember{
+		"c1": {{Email: "alice@example.com"}},
+	}}
+	email := &fakeEmailDispatcher{}
+	unsub := NewUnsubscribeService(repo, []byte("k"), "https://api.example/base?utm=one&src=two")
+	orch := newTestOrchestrator(repo, committee, email, unsub)
+
+	draft := repo.addDraft("p1", []string{"c1"})
+	_, err := orch.SendNewsletter(context.Background(), SendNewsletterInput{
+		ProjectUID:   "p1",
+		NewsletterID: draft.ID,
+	})
+	if err != nil {
+		t.Fatalf("SendNewsletter: %v", err)
+	}
+	if len(email.sends) != 1 {
+		t.Fatalf("got %d sends, want 1", len(email.sends))
+	}
+	if !strings.Contains(email.sends[0].HTML, "utm=one&amp;src=two") {
+		t.Fatalf("HTML unsubscribe URL was not escaped: %s", email.sends[0].HTML)
+	}
+	if strings.Contains(email.sends[0].Text, "&amp;") {
+		t.Fatalf("plain-text unsubscribe URL should not be HTML-escaped: %s", email.sends[0].Text)
+	}
+}
+
 // TestSendUnsubscribeResendExcludes is the end-to-end scenario the user
 // asked for: send → click unsubscribe link → resend → confirm exclusion,
 // and confirm the exclusion is project-scoped.

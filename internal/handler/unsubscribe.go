@@ -46,20 +46,22 @@ func (h *Handler) Unsubscribe(w http.ResponseWriter, r *http.Request) {
 
 	displayName := h.projectDisplayName(ctx, projectUID)
 	writeUnsubscribeHTML(w, http.StatusOK, "You're unsubscribed",
-		html.EscapeString(email)+" will no longer receive "+html.EscapeString(displayName)+" newsletters.")
+		email+" will no longer receive "+displayName+" newsletters.")
 }
 
 // writeUnsubscribeHTML writes a minimal self-contained confirmation page.
-// Both heading and body must already be HTML-safe.
+// The heading and body are escaped here so callers can pass plain text.
 func writeUnsubscribeHTML(w http.ResponseWriter, status int, heading, body string) {
+	headingSafe := html.EscapeString(heading)
+	bodySafe := html.EscapeString(body)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(status)
 	_, _ = w.Write([]byte(`<!DOCTYPE html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>` + heading + `</title></head>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>` + headingSafe + `</title></head>
 <body style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;max-width:560px;margin:48px auto;padding:0 16px;color:#1F2937;">
-<h1 style="font-size:22px;">` + heading + `</h1>
-<p style="font-size:15px;line-height:1.6;color:#4B5563;">` + body + `</p>
+<h1 style="font-size:22px;">` + headingSafe + `</h1>
+<p style="font-size:15px;line-height:1.6;color:#4B5563;">` + bodySafe + `</p>
 <p style="font-size:12px;color:#9CA3AF;margin-top:32px;">Delivered by <strong style="color:#3B82F6;">LFX</strong></p>
 </body></html>`))
 }

@@ -6,6 +6,7 @@ package service
 import (
 	"context"
 	"fmt"
+	"html"
 	"log/slog"
 	"net/mail"
 	"strings"
@@ -386,7 +387,7 @@ func (o *SendOrchestrator) fanOut(ctx context.Context, projectUID string, recipi
 			recipientHTML, recipientText := htmlBody, textBody
 			if o.unsub.Enabled() {
 				url := o.unsub.BuildURL(projectUID, recipient.Email)
-				recipientHTML = strings.ReplaceAll(htmlBody, UnsubscribeURLPlaceholder, url)
+				recipientHTML = strings.ReplaceAll(htmlBody, UnsubscribeURLPlaceholder, html.EscapeString(url))
 				recipientText = strings.ReplaceAll(textBody, UnsubscribeURLPlaceholder, url)
 			}
 			_, err := o.email.SendEmail(ctx, port.SendEmailInput{

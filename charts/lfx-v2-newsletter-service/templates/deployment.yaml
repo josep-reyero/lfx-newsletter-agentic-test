@@ -87,6 +87,9 @@ spec:
                   name: {{ .Values.app.unsubscribe.secretRef.name }}
                   key: {{ .Values.app.unsubscribe.secretRef.key }}
             {{- else if .Values.app.unsubscribe.secret }}
+            {{- if not .Values.app.unsubscribe.allowPlaintextSecret }}
+            {{- fail "app.unsubscribe.secret requires app.unsubscribe.allowPlaintextSecret=true; use app.unsubscribe.secretRef for shared/prod deployments" }}
+            {{- end }}
             - name: NEWSLETTER_UNSUBSCRIBE_SECRET
               value: {{ .Values.app.unsubscribe.secret | quote }}
             {{- end }}

@@ -74,6 +74,9 @@ app:
   # be forged. Both are REQUIRED when send.fanoutEnabled=true.
   unsubscribe:
     publicBaseURL: ""
+    # allowPlaintextSecret must be true before the chart accepts secret below.
+    # Keep false outside local/dev and use secretRef instead.
+    allowPlaintextSecret: false
     # secret sets the HMAC key directly (local/dev only). Prefer secretRef.
     secret: ""
     # secretRef sources the HMAC key from a Kubernetes Secret.

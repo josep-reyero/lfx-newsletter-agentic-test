@@ -72,3 +72,19 @@ func TestUnsubscribeHandlerInvalidToken(t *testing.T) {
 		t.Errorf("body should mention invalid link: %s", w.Body.String())
 	}
 }
+
+func TestWriteUnsubscribeHTMLEscapesHeadingAndBody(t *testing.T) {
+	w := httptest.NewRecorder()
+	writeUnsubscribeHTML(w, http.StatusOK, `<script>alert("x")</script>`, `<img src=x onerror=alert("x")>`)
+
+	body := w.Body.String()
+	if strings.Contains(body, `<script>`) || strings.Contains(body, `<img src=x`) {
+		t.Fatalf("body contains unescaped HTML: %s", body)
+	}
+	if !strings.Contains(body, `&lt;script&gt;alert(&#34;x&#34;)&lt;/script&gt;`) {
+		t.Fatalf("body missing escaped heading: %s", body)
+	}
+	if !strings.Contains(body, `&lt;img src=x onerror=alert(&#34;x&#34;)&gt;`) {
+		t.Fatalf("body missing escaped body text: %s", body)
+	}
+}
