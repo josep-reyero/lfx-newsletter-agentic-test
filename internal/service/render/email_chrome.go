@@ -83,6 +83,20 @@ var bodyTagStyles = map[string]string{
 // different style attribute (harmless functionally, noisy in tests/diffs).
 var inlineBodyStylesTagOrder = []string{"p", "h2", "h3", "ul", "ol", "li", "blockquote", "hr", "a", "strong", "b"}
 
+var inlineBodyStyleTagRe = map[string]*regexp.Regexp{
+	"p":          regexp.MustCompile(`(?i)<p(\s[^>]*)?/?>`),
+	"h2":         regexp.MustCompile(`(?i)<h2(\s[^>]*)?/?>`),
+	"h3":         regexp.MustCompile(`(?i)<h3(\s[^>]*)?/?>`),
+	"ul":         regexp.MustCompile(`(?i)<ul(\s[^>]*)?/?>`),
+	"ol":         regexp.MustCompile(`(?i)<ol(\s[^>]*)?/?>`),
+	"li":         regexp.MustCompile(`(?i)<li(\s[^>]*)?/?>`),
+	"blockquote": regexp.MustCompile(`(?i)<blockquote(\s[^>]*)?/?>`),
+	"hr":         regexp.MustCompile(`(?i)<hr(\s[^>]*)?/?>`),
+	"a":          regexp.MustCompile(`(?i)<a(\s[^>]*)?/?>`),
+	"strong":     regexp.MustCompile(`(?i)<strong(\s[^>]*)?/?>`),
+	"b":          regexp.MustCompile(`(?i)<b(\s[^>]*)?/?>`),
+}
+
 // htmlEscaper escapes the five characters that need HTML entity treatment in
 // chrome strings (subject, display name, sender, reply-to). bodyHtml is NOT
 // run through this — see the package trust boundary comment.
@@ -107,8 +121,7 @@ func inlineBodyStyles(html string) string {
 	result := html
 	for _, tag := range inlineBodyStylesTagOrder {
 		style := bodyTagStyles[tag]
-		// (?i) case-insensitive. Optional trailing `/` so `<hr/>` is also styled.
-		re := regexp.MustCompile(`(?i)<` + tag + `(\s[^>]*)?/?>`)
+		re := inlineBodyStyleTagRe[tag]
 		result = re.ReplaceAllStringFunc(result, func(match string) string {
 			attrs := extractAttrs(match, tag)
 			if hasStyleAttr(attrs) {

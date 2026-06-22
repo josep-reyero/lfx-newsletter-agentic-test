@@ -19,6 +19,7 @@ import (
 	"github.com/linuxfoundation/lfx-v2-newsletter-service/internal/domain/model"
 	"github.com/linuxfoundation/lfx-v2-newsletter-service/internal/domain/port"
 	"github.com/linuxfoundation/lfx-v2-newsletter-service/internal/service/render"
+	pkgerrors "github.com/linuxfoundation/lfx-v2-newsletter-service/pkg/errors"
 )
 
 // defaultSendConcurrency caps in-flight email-service requests during fan-out.
@@ -31,21 +32,21 @@ const defaultSendConcurrency = 5
 // transition. It owns the email-service integration; the UI no longer talks
 // to email-service directly.
 type SendOrchestrator struct {
-	repo           port.NewsletterRepository
-	committee      port.CommitteeClient
-	project        port.ProjectMetadataClient
-	email          port.EmailDispatcher
-	concurrency    int
-	fanoutEnabled  bool
+	repo          port.NewsletterRepository
+	committee     port.CommitteeClient
+	project       port.ProjectMetadataClient
+	email         port.EmailDispatcher
+	concurrency   int
+	fanoutEnabled bool
 }
 
 // SendOrchestratorConfig configures a SendOrchestrator.
 type SendOrchestratorConfig struct {
-	Repo          port.NewsletterRepository
-	Committee     port.CommitteeClient
-	Project       port.ProjectMetadataClient
-	Email         port.EmailDispatcher
-	Concurrency   int
+	Repo        port.NewsletterRepository
+	Committee   port.CommitteeClient
+	Project     port.ProjectMetadataClient
+	Email       port.EmailDispatcher
+	Concurrency int
 	// FanoutEnabled is the feature toggle for the per-recipient send loop.
 	// Defaults to true; flip false in environments where we want to validate
 	// the recipient-resolution path without sending real mail.
@@ -139,6 +140,16 @@ func (o *SendOrchestrator) SendNewsletter(ctx context.Context, in SendNewsletter
 	groupID := uuid.NewString()
 
 	sent, failed, failures := o.fanOut(ctx, recipients, draft.Subject, htmlBody, textBody, groupID)
+	if sent == 0 && failed > 0 {
+		slog.WarnContext(ctx, "newsletter send failed for every recipient; leaving draft retryable",
+			"newsletter_id", draft.ID,
+			"project_uid", draft.ProjectUID,
+			"group_id", groupID,
+			"total_recipients", len(recipients),
+			"failed", failed,
+		)
+		return nil, pkgerrors.NewServiceUnavailable("email dispatch failed for every recipient")
+	}
 
 	updated, markErr := o.repo.MarkSent(ctx, draft.ID, time.Now().UTC(), len(recipients), groupID, draft.Version)
 	if markErr != nil {
@@ -318,8 +329,20 @@ func (o *SendOrchestrator) fanOut(ctx context.Context, recipients []model.Commit
 	var wg sync.WaitGroup
 	for _, r := range recipients {
 		recipient := r
+		select {
+		case sem <- struct{}{}:
+		case <-ctx.Done():
+			mu.Lock()
+			failed++
+			errMsg := "context canceled"
+			if err := ctx.Err(); err != nil {
+				errMsg = err.Error()
+			}
+			failures = append(failures, SendFailure{Email: recipient.Email, Error: errMsg})
+			mu.Unlock()
+			continue
+		}
 		wg.Add(1)
-		sem <- struct{}{}
 		go func() {
 			defer wg.Done()
 			defer func() { <-sem }()

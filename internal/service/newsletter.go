@@ -154,23 +154,6 @@ func (s *NewsletterService) ListNewsletters(ctx context.Context, in ListNewslett
 	})
 }
 
-// Analytics returns aggregated engagement metrics for the given newsletter.
-// Returns ErrNotFound if the newsletter doesn't exist or belongs to a different
-// project than the one supplied.
-func (s *NewsletterService) Analytics(ctx context.Context, projectUID string, id uuid.UUID) (*model.Analytics, error) {
-	if err := validateProjectUID(projectUID); err != nil {
-		return nil, err
-	}
-	n, err := s.repo.Get(ctx, id)
-	if err != nil {
-		return nil, err
-	}
-	if n.ProjectUID != projectUID {
-		return nil, domain.ErrNotFound
-	}
-	return s.repo.Analytics(ctx, id)
-}
-
 // RecordOpenWithHash records a single open event using an already-hashed
 // recipient token (e.g. the hash carried in a tracking-pixel URL).
 //
