@@ -250,7 +250,7 @@ func renderComplianceFooterHTML(input Chrome, displayNameSafe string) string {
 		unsubLine = `<a href="` + escapeHTML(input.UnsubscribeURL) + `" style="color:` + colorBlue500 + `;text-decoration:underline;">Unsubscribe</a> from ` + displayNameSafe + ` newsletters.`
 	}
 	return `<tr>
-<td class="lfx-pad" style="background-color:` + colorGray50 + `;border-top:1px solid ` + colorGray200 + `;padding:24px 24px;font-size:12px;color:` + colorGray500 + `;font-family:` + fontStack + `;">
+<td style="background-color:` + colorGray50 + `;border-top:1px solid ` + colorGray200 + `;padding:24px 16px;font-size:12px;color:` + colorGray500 + `;font-family:` + fontStack + `;">
 <div style="margin-bottom:6px;">Sent by <strong style="color:` + colorGray900 + `;">` + edNameSafe + `</strong> on behalf of <strong style="color:` + colorGray900 + `;">` + displayNameSafe + `</strong>.</div>
 ` + replyLine + `
 <div style="color:` + colorGray400 + `;font-size:11px;">` + unsubLine + ` Delivered by <span style="font-weight:700;color:` + colorBlue500 + `;letter-spacing:-0.02em;">LFX</span>.</div>
@@ -291,11 +291,6 @@ func EmailHTML(input Chrome) string {
 <meta name="viewport" content="width=device-width,initial-scale=1" />
 <meta http-equiv="X-UA-Compatible" content="IE=edge" />
 <title>` + subjectSafe + `</title>
-<style>
-@media only screen and (max-width:600px){
-.lfx-pad{padding-left:16px!important;padding-right:16px!important;}
-}
-</style>
 </head>
 <body style="margin:0;padding:0;background-color:` + colorGray50 + `;font-family:` + fontStack + `;">
 <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="background-color:` + colorGray50 + `;padding:16px 8px;">
@@ -303,7 +298,7 @@ func EmailHTML(input Chrome) string {
 <td align="center">
 <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="width:100%;max-width:680px;background-color:` + colorWhite + `;border:1px solid ` + colorGray200 + `;border-radius:8px;overflow:hidden;">
 <tr>
-<td class="lfx-pad" style="` + headerBG + `color:` + colorWhite + `;padding:28px 24px;font-family:` + fontStack + `;">
+<td style="` + headerBG + `color:` + colorWhite + `;padding:28px 16px;font-family:` + fontStack + `;">
 <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%">
 <tr>
 ` + logoCell + `
@@ -316,7 +311,7 @@ func EmailHTML(input Chrome) string {
 </td>
 </tr>
 <tr>
-<td class="lfx-pad" style="padding:28px 24px;font-size:16px;color:` + colorGray800 + `;line-height:1.65;font-family:` + fontStack + `;">` + styledBody + `</td>
+<td style="padding:28px 16px;font-size:16px;color:` + colorGray800 + `;line-height:1.65;font-family:` + fontStack + `;">` + styledBody + `</td>
 </tr>
 ` + complianceFooter + `
 </table>
