@@ -32,6 +32,16 @@ ALTER TABLE newsletters
 
 -- PG has no native IF NOT EXISTS on ADD CONSTRAINT; check pg_constraint first
 -- so re-running schema.sql is a no-op.
+--
+-- Both constraints are added NOT VALID on purpose. schema.Apply runs this SQL
+-- during startup in a single transaction, and a plain (validated) CHECK is
+-- verified against every existing row at creation time. Pre-existing
+-- status='sent' rows from the base service have no group_id, so a validated
+-- "sent => group_id NOT NULL" constraint would abort startup and block the
+-- rolling deploy. NOT VALID skips the one-time scan of historical rows while
+-- still enforcing the invariant on every INSERT/UPDATE going forward. A
+-- follow-up migration can backfill historical correlation ids and run
+-- VALIDATE CONSTRAINT (a non-blocking online operation) once the data is clean.
 DO $$
 BEGIN
     IF NOT EXISTS (
@@ -39,14 +49,16 @@ BEGIN
     ) THEN
         ALTER TABLE newsletters
             ADD CONSTRAINT newsletters_group_id_uuid_format
-            CHECK (group_id IS NULL OR group_id ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$');
+            CHECK (group_id IS NULL OR group_id ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$')
+            NOT VALID;
     END IF;
     IF NOT EXISTS (
         SELECT 1 FROM pg_constraint WHERE conname = 'newsletters_sent_requires_group_id'
     ) THEN
         ALTER TABLE newsletters
             ADD CONSTRAINT newsletters_sent_requires_group_id
-            CHECK (status <> 'sent' OR group_id IS NOT NULL);
+            CHECK (status <> 'sent' OR group_id IS NOT NULL)
+            NOT VALID;
     END IF;
 END$$;
 
