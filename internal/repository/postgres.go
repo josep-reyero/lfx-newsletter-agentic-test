@@ -288,7 +288,13 @@ func (r *PostgresNewsletterRepo) MarkSent(ctx context.Context, id uuid.UUID, sen
 		return nil, fmt.Errorf("mark sent rows affected: %w", err)
 	}
 	if rowsAffected == 0 {
-		return nil, r.classifyMarkSentMiss(ctx, id, expectedVersion)
+		// The conditional update can miss because a prior attempt already
+		// finalized this exact send. If the row is already sent under the SAME
+		// group_id, the send succeeded — treat MarkSent as idempotent and return
+		// the persisted row rather than erroring, so a retry after a lost MarkSent
+		// response doesn't re-send. Any other miss (not found / different version /
+		// different group) is classified as before.
+		return r.classifyMarkSentMiss(ctx, id, expectedVersion, groupID)
 	}
 	return updated, nil
 }
@@ -403,9 +409,12 @@ func (r *PostgresNewsletterRepo) classifyMissing(ctx context.Context, id uuid.UU
 	return domain.ErrVersionMismatch
 }
 
-// classifyMarkSentMiss distinguishes the three reasons a MarkSent update can
-// affect zero rows: not found, wrong version, or already sent.
-func (r *PostgresNewsletterRepo) classifyMarkSentMiss(ctx context.Context, id uuid.UUID, expectedVersion int64) error {
+// classifyMarkSentMiss distinguishes why a MarkSent update affected zero rows.
+// A row already sent under the SAME group_id is an idempotent success (a retry
+// after a lost MarkSent response) and is returned as the persisted newsletter.
+// Otherwise it returns the appropriate error: not found, already sent (under a
+// different group), or version mismatch.
+func (r *PostgresNewsletterRepo) classifyMarkSentMiss(ctx context.Context, id uuid.UUID, expectedVersion int64, groupID string) (*model.Newsletter, error) {
 	existing := &model.Newsletter{}
 	err := r.db.NewSelect().
 		Model(existing).
@@ -413,18 +422,22 @@ func (r *PostgresNewsletterRepo) classifyMarkSentMiss(ctx context.Context, id uu
 		Scan(ctx)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return domain.ErrNotFound
+			return nil, domain.ErrNotFound
 		}
-		return fmt.Errorf("classify mark sent miss: %w", err)
+		return nil, fmt.Errorf("classify mark sent miss: %w", err)
 	}
 	if existing.Status == model.StatusSent {
-		return domain.ErrAlreadySent
+		// Idempotent: this exact send already finalized.
+		if existing.GroupID != nil && *existing.GroupID == groupID && groupID != "" {
+			return existing, nil
+		}
+		return nil, domain.ErrAlreadySent
 	}
 	if existing.Version != expectedVersion {
-		return domain.ErrVersionMismatch
+		return nil, domain.ErrVersionMismatch
 	}
 	// Unreachable in practice — fall back to version mismatch.
-	return domain.ErrVersionMismatch
+	return nil, domain.ErrVersionMismatch
 }
 
 // listCursor is the keyset cursor encoded into NextPageToken for ListAll.

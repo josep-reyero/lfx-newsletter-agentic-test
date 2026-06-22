@@ -1,21 +1,22 @@
 # LFX One Newsletter Service
 
-A Go microservice in the LFX v2 platform that owns newsletter persistence and
-the draft → sent state transition.
+A Go microservice in the LFX v2 platform that owns project-scoped newsletter
+persistence, recipient resolution, email dispatch, and the draft → sent state
+transition. All APIs are scoped under `/projects/{project_uid}/...`.
 
 ## Responsibilities
 
 - Persist newsletter drafts and sent history (CloudNativePG-backed Postgres).
-- Resolve recipient lists from committees (read-only HTTP calls to the LFX v2
-  query service).
-- Expose an HTTP REST API consumed by the lfx-v2-ui Express server.
+- Resolve recipient lists from committees over NATS request/reply to
+  lfx-v2-committee-service, authorized against the request's project.
+- Dispatch newsletters by fanning out per-recipient `send_email` requests to
+  lfx-v2-email-service over NATS, flipping the draft to `status=sent` only when
+  at least one delivery is accepted.
+- Track opens via a local pixel endpoint and aggregate engagement analytics.
+- Expose a project-scoped HTTP REST API consumed by the authoring UI.
 
-> **Out of scope right now:** actual email delivery. `/newsletters/test-send`
-> and `/newsletters/drafts/{id}/send` validate inputs, resolve recipient counts,
-> and (for `/send`) flip the draft to `status=sent` in the database — but they
-> do **not** dispatch any email. Wiring up a real email publisher
-> (e.g. publishing to `lfx-v2-email-service` over NATS) is a planned follow-up.
-> AI content generation continues to live in lfx-v2-ui.
+> AI content generation continues to live in the authoring UI; this service does
+> not proxy AI calls.
 
 ## Quick Start
 
@@ -33,8 +34,9 @@ Two supported paths for running the service locally:
 - Go 1.25+
 - A running PostgreSQL 16+ instance (Path A) **or** OrbStack/kind with `kubectl`,
   `helm` 3.8+, and [`ko`](https://ko.build) (Path B)
-- A reachable `lfx-v2-query-service` (or a stubbed `COMMITTEE_SERVICE_URL` —
-  the service starts without it being live, but recipient resolution will fail)
+- A reachable NATS server (`NATS_URL`) exposing the committee, project, and
+  email-service subjects — the service starts without them being live, but
+  recipient resolution, project metadata, and email dispatch will fail
 
 ---
 
@@ -53,7 +55,8 @@ you do **not** need to run any SQL files manually.
 
 ```bash
 export DATABASE_URL='postgres://<your-user>@localhost:5432/newsletters?sslmode=disable'
-export COMMITTEE_SERVICE_URL='http://localhost:8081'   # lfx-v2-query-service / API gateway
+export NATS_URL='nats://localhost:4222'                # committee / project / email subjects
+export PUBLIC_API_BASE_URL='http://localhost:8080'     # builds the open-tracking pixel URL
 export REQUIRE_USER_AUTH=false                         # local only — production must verify JWTs
 export LOG_LEVEL=debug
 ```
@@ -81,9 +84,8 @@ curl -s http://localhost:8080/livez && echo
 # → ok
 ```
 
-If you see `missing required env vars: DATABASE_URL, COMMITTEE_SERVICE_URL`,
-the env vars above are not set in the shell you ran `make run` from — `make`
-does **not** load your shell rc.
+If you see `missing required env vars: DATABASE_URL`, the env vars above are not
+set in the shell you ran `make run` from — `make` does **not** load your shell rc.
 
 ---
 
@@ -119,8 +121,8 @@ cp charts/lfx-v2-newsletter-service/values.local.yaml.example \
 
 The example file pins the chart to `database.mode=cluster+database`, points
 `image.repository` at `ko.local/newsletter-api`, disables `requireUserAuth`,
-and disables the NetworkPolicy for easier debugging. Adjust
-`app.committeeServiceURL` to point at your local query-service if needed.
+and disables the NetworkPolicy for easier debugging. Adjust `app.nats.url` to
+point at your local NATS server if needed.
 
 **4. Install the chart.**
 
@@ -207,13 +209,14 @@ cmd/newsletter-api/
     └── implementations.go    # wires infrastructure into service structs
 
 internal/domain/
-├── model/                    # Newsletter, Status, ContextType, CommitteeMember
-├── port/                     # interfaces: NewsletterRepository, CommitteeClient
-└── errors.go                 # ErrNotFound, ErrVersionMismatch, ErrInvalidRequest, ErrAlreadySent
+├── model/                    # Newsletter (project-scoped), Status, CommitteeMember
+├── port/                     # interfaces: NewsletterRepository, CommitteeClient, ProjectMetadataClient, EmailDispatcher
+└── errors.go                 # ErrNotFound, ErrVersionMismatch, ErrInvalidRequest, ErrAlreadySent, ErrForbidden
 
 internal/service/
 ├── newsletter.go             # CRUD + validation + state transitions
-└── send_orchestrator.go      # resolve recipients, mark draft sent (no email dispatch)
+└── send_orchestrator.go      # project-scoped recipient resolution, email fan-out
+                              # over NATS, open-pixel injection, durable send intent
 
 internal/repository/
 └── postgres.go               # bun-backed NewsletterRepository with optimistic locking
@@ -224,17 +227,17 @@ internal/schema/
 
 internal/handler/
 ├── http.go                   # Routes(), JSON helpers
-├── drafts.go                 # /newsletters/drafts CRUD handlers
+├── drafts.go                 # project-scoped newsletter CRUD handlers
 ├── send.go                   # send / test-send / recipients handlers
 ├── health.go                 # /livez and /readyz
 └── middleware.go             # JWKS auth, request log
 
 internal/infrastructure/
 ├── observability/            # OTel SDK + slog handler
-└── upstream/                 # HTTP client for committee/query service
+└── nats/                     # NATS clients: committee, project, email dispatcher
 
 pkg/api/
-└── newsletter.go             # public DTOs (mirror lfx-v2-ui shared interfaces)
+└── newsletter.go             # public DTOs (snake_case V2 contract)
 
 charts/lfx-v2-newsletter-service/   # Helm chart with three database.mode options
 ```
@@ -265,22 +268,23 @@ production (per-service Postgres roles with least-privilege secrets).
 
 ## HTTP API
 
-| Method | Path                                  | Description                                  |
-| ------ | ------------------------------------- | -------------------------------------------- |
-| GET    | `/livez`                              | liveness probe                               |
-| GET    | `/readyz`                             | readiness probe (DB ping)                    |
-| POST   | `/newsletters/drafts`                 | create draft                                 |
-| GET    | `/newsletters/drafts`                 | list drafts for a context                    |
-| GET    | `/newsletters/drafts/{id}`            | fetch draft (returns ETag)                   |
-| PUT    | `/newsletters/drafts/{id}`            | update draft (requires If-Match)             |
-| DELETE | `/newsletters/drafts/{id}`            | delete draft                                 |
-| POST   | `/newsletters/drafts/{id}/send`       | mark draft as sent (no email)                |
-| POST   | `/newsletters/recipient-count`        | preview unique recipient count               |
-| POST   | `/newsletters/recipients`             | preview recipient list                       |
-| POST   | `/newsletters/test-send`              | validate-only stub (no email)                |
-| GET    | `/newsletters`                        | unified list of newsletters for a context    |
-| GET    | `/newsletter-analytics/{id}`          | per-newsletter analytics (opens, recipients) |
-| GET    | `/newsletter-opens/{id}`              | open-tracking pixel (unauthenticated GIF)    |
+All newsletter routes are project-scoped under `/projects/{project_uid}`.
+
+| Method | Path                                                          | Description                                  |
+| ------ | ------------------------------------------------------------ | -------------------------------------------- |
+| GET    | `/livez`                                                     | liveness probe                               |
+| GET    | `/readyz`                                                    | readiness probe (DB ping + NATS)             |
+| POST   | `/projects/{project_uid}/newsletters`                        | create draft                                 |
+| GET    | `/projects/{project_uid}/newsletters`                        | list newsletters for the project            |
+| GET    | `/projects/{project_uid}/newsletters/{newsletter_uid}`       | fetch newsletter (returns ETag)             |
+| PUT    | `/projects/{project_uid}/newsletters/{newsletter_uid}`       | update draft (requires If-Match)            |
+| DELETE | `/projects/{project_uid}/newsletters/{newsletter_uid}`       | delete draft                                 |
+| POST   | `/projects/{project_uid}/newsletters/{newsletter_uid}/send`  | resolve recipients and dispatch the send    |
+| POST   | `/projects/{project_uid}/newsletters/recipient-count`        | preview unique recipient count               |
+| POST   | `/projects/{project_uid}/newsletters/recipients`             | preview recipient list                       |
+| POST   | `/projects/{project_uid}/newsletters/test-send`              | dispatch a single test email                 |
+| GET    | `/projects/{project_uid}/newsletter-analytics/{newsletter_uid}` | per-newsletter analytics (opens, recipients) |
+| GET    | `/projects/{project_uid}/newsletter-opens/{newsletter_uid}`  | open-tracking pixel (unauthenticated GIF)    |
 
 Optimistic concurrency control: every draft carries an integer `version`
 column atomically incremented on each `UPDATE`. `GET` returns
@@ -289,7 +293,9 @@ column atomically incremented on each `UPDATE`. `GET` returns
 
 ## Related Services
 
-| Service                          | Relationship                                                  |
-| -------------------------------- | ------------------------------------------------------------- |
-| `lfx-v2-query-service`           | Source of committee member emails (via `/query/resources`)    |
-| `lfx-v2-ui` (Express server)     | HTTP client; proxies UI requests to this service               |
+| Service                          | Relationship                                                            |
+| -------------------------------- | ----------------------------------------------------------------------- |
+| `lfx-v2-committee-service`       | Recipient resolution over NATS (`list_members`, `get_project` scoping)  |
+| `lfx-v2-project-service`         | Project name/slug for email chrome over NATS (`get_name`, `get_slug`)   |
+| `lfx-v2-email-service`           | Per-recipient email dispatch and engagement analytics over NATS         |
+| Authoring UI                     | HTTP client; proxies project-scoped UI requests to this service         |
