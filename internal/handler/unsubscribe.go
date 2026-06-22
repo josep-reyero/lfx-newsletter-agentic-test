@@ -29,6 +29,18 @@ import (
 // than offering a JSON download.
 func (h *Handler) UnsubscribeConfirm(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
+
+	// Go's net/http ServeMux routes HEAD to a GET-only pattern. Link checkers,
+	// security scanners, and mail-client preview engines commonly probe URLs
+	// with HEAD. Rendering the confirmation page is already non-mutating, but
+	// treat HEAD as an explicit no-op so we never spend a project lookup or
+	// emit a body for an automated probe.
+	if r.Method == http.MethodHead {
+		w.Header().Set("Cache-Control", "no-store")
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+
 	token := r.URL.Query().Get("t")
 
 	if h.unsub == nil {

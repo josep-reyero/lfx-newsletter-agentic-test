@@ -316,13 +316,16 @@ spec:
     # One-click unsubscribe: intentionally unauthenticated. Recipients click
     # the footer link from their mail client with no session. Authorization
     # comes from the HMAC-signed `t` query parameter, verified server-side.
+    # GET renders a confirmation page (non-mutating); POST records the opt-out.
+    # HEAD is intentionally omitted so link checkers and mail-client preview
+    # engines cannot reach the handler.
     # ---------------------------------------------------------------------
     - id: "rule:lfx:lfx-v2-newsletter-service:newsletters:unsubscribe"
       allow_encoded_slashes: 'off'
       match:
         methods:
           - GET
-          - HEAD
+          - POST
         routes:
           - path: /newsletters/unsubscribe
       execute:
