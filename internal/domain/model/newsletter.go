@@ -56,6 +56,7 @@ type NewsletterOpen struct {
 	NewsletterID  uuid.UUID `bun:"newsletter_id,notnull,type:uuid" json:"newsletterId"`
 	RecipientHash string    `bun:"recipient_hash,notnull" json:"recipientHash"`
 	OpenedAt      time.Time `bun:"opened_at,notnull,default:current_timestamp" json:"openedAt"`
+	OpenedAtHour  int64     `bun:"opened_at_hour,notnull" json:"openedAtHour"`
 }
 
 // DailyOpens is one bucket of opens for an analytics time-series.

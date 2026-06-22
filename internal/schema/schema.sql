@@ -39,7 +39,8 @@ CREATE TABLE IF NOT EXISTS newsletter_opens (
     id              UUID         PRIMARY KEY DEFAULT gen_random_uuid(),
     newsletter_id   UUID         NOT NULL REFERENCES newsletters(id) ON DELETE CASCADE,
     recipient_hash  TEXT         NOT NULL,
-    opened_at       TIMESTAMPTZ  NOT NULL DEFAULT now()
+    opened_at       TIMESTAMPTZ  NOT NULL DEFAULT now(),
+    opened_at_hour  BIGINT       NOT NULL
 );
 
 -- PG has no native IF NOT EXISTS on ADD CONSTRAINT; check pg_constraint
@@ -62,11 +63,18 @@ CREATE INDEX IF NOT EXISTS idx_opens_opened_at             ON newsletter_opens (
 -- Bound runaway growth on the unauthenticated open-tracking pixel: collapse
 -- repeat hits from the same recipient within the same hour into a single row.
 -- opened_at_hour stores the UTC hour bucket as epoch-hours so the conflict
--- target can use a plain immutable column. Avoid date_trunc/AT TIME ZONE here:
--- generated columns reject STABLE timezone functions.
+-- target can use a plain column. The application writes this value from the
+-- same timestamp used for opened_at; keep it out of a generated expression
+-- because PostgreSQL marks timestamptz extraction functions as STABLE.
 ALTER TABLE newsletter_opens
-    ADD COLUMN IF NOT EXISTS opened_at_hour BIGINT
-        GENERATED ALWAYS AS (floor(EXTRACT(EPOCH FROM opened_at) / 3600)::bigint) STORED;
+    ADD COLUMN IF NOT EXISTS opened_at_hour BIGINT;
+
+UPDATE newsletter_opens
+SET opened_at_hour = floor(EXTRACT(EPOCH FROM opened_at) / 3600)::bigint
+WHERE opened_at_hour IS NULL;
+
+ALTER TABLE newsletter_opens
+    ALTER COLUMN opened_at_hour SET NOT NULL;
 
 -- The application is expected to use ON CONFLICT DO NOTHING when inserting.
 CREATE UNIQUE INDEX IF NOT EXISTS uq_opens_newsletter_recipient_hour
