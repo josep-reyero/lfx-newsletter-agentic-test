@@ -222,9 +222,12 @@ func (r *PostgresNewsletterRepo) MarkSent(ctx context.Context, id uuid.UUID, sen
 // uq_opens_newsletter_recipient_hour unique index — this bounds growth on the
 // unauthenticated tracking pixel without losing unique-open counts.
 func (r *PostgresNewsletterRepo) RecordOpen(ctx context.Context, newsletterID uuid.UUID, recipientHash string) error {
+	openedAt := time.Now().UTC()
 	open := &model.NewsletterOpen{
 		NewsletterID:  newsletterID,
 		RecipientHash: recipientHash,
+		OpenedAt:      openedAt,
+		OpenedAtHour:  openedAt.Unix() / 3600,
 	}
 	if _, err := r.db.NewInsert().
 		Model(open).
